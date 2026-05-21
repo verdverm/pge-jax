@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from itertools import combinations as combos_woutR
 from itertools import combinations_with_replacement as combos_withR
-from typing import List, Optional, Sequence
+from typing import List, Optional
 
 import sympy
 

@@ -8,7 +8,7 @@ population).  Filters are applied via
 
 from __future__ import annotations
 
-from sympy import preorder_traversal, Symbol
+from sympy import Symbol, preorder_traversal
 from sympy.core.numbers import Integer, One, Zero
 
 from pge_jax.search_model import SearchModel

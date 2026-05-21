@@ -45,6 +45,9 @@ def selNSGA2(
     list
         Selected individuals (references to input objects).
     """
+    if not individuals:
+        return []
+
     if nd == "standard":
         pareto_fronts = sortNondominated(individuals, k)
     elif nd == "log":
@@ -273,6 +276,9 @@ def sortLogNondominated(
         List of Pareto fronts.
     """
     if k == 0:
+        return []
+
+    if not individuals:
         return []
 
     unique_fits = defaultdict(list)

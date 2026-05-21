@@ -1,131 +1,123 @@
 # pge-jax
 
-JAX implementation of the PGE algorithm (Prioritized Grammar Enumeration) for symbolic regression.
+JAX implementation of the **Prioritized Grammar Enumeration (PGE)** algorithm for symbolic regression.
 
 ## Overview
 
-This project is a JAX-native reimplementation of the PGE algorithm, ported from the original Python (pypge) and Go (go-pge) implementations. PGE is a symbolic regression method that enumerates candidate expressions from a grammar, prioritizing them by fitness to efficiently search the space of possible mathematical formulas.
+pge-jax is a complete symbolic regression system that automatically discovers mathematical formulas from data. It enumerates candidate expressions from a grammar, fits their coefficients using JAX-native Levenberg-Marquardt optimization, and selects the best models using multi-objective evolutionary algorithms (NSGA-II).
 
-The key innovation here is replacing the evaluation and optimization pipeline with JAX, enabling:
-- GPU/TPU acceleration of model evaluation
-- Automatic differentiation for Jacobian computation
-- JIT compilation for fast execution
-- Differentiable programming capabilities
+The key advantage over prior implementations (pypge, go-pge) is a fully JAX-native evaluation pipeline, enabling:
+
+- **GPU/TPU acceleration** of model evaluation and Jacobian computation
+- **JIT compilation** via `jax.jit` and `jax.vmap`
+- **Automatic differentiation** for efficient gradient-based optimization
+- **No external ML dependencies** — no scikit-learn, lmfit, or DEAP required
+
+## Quick Start
+
+```python
+import jax
+jax.config.update("jax_enable_x64", True)
+
+import numpy as np
+from pge_jax import PGE
+
+# Generate synthetic data
+np.random.seed(42)
+X = np.random.randn(100, 2)
+Y = 3.0 * X[:, 0] + 1.5 * X[:, 1]**2 - 0.5 * np.sin(X[:, 0])
+
+# Run PGE search
+pge = PGE(
+    usable_vars=["x0", "x1"],
+    usable_funcs=["sin", "cos", "exp", "log"],
+    max_iter=10,
+    pop_count=3,
+    peek_npts=16,       # subset size for fast partial evaluation
+)
+pge.fit(X, Y)
+
+# Get results
+best = pge.get_best_model()
+print(best.pretty_expr())  # e.g. "3.0*x0 + 1.5*x1**2 - 0.5*sin(x0)"
+
+paretos = pge.get_final_paretos()  # list of Pareto fronts
+```
 
 ## Architecture
-
-### Module Structure
 
 ```
 pge_jax/
 ├── __init__.py          # Public API exports
-├── model.py             # JAXModel - sympy expression wrapper with JAX evaluation
-├── optimize.py          # Levenberg-Marquardt and BFGS optimizers in JAX
-├── metrics.py           # JAX-native metric functions (RMSE, R², AIC, etc.)
-└── evaluate.py          # High-level fit/evaluate pipeline
+├── model.py             # JAXModel — sympy expression → JAX evaluation wrapper
+├── optimize.py          # Levenberg-Marquardt + BFGS optimizers (JAX-native)
+├── metrics.py           # JAX-native regression metrics (RMSE, R², AIC, etc.)
+├── evaluate.py          # High-level fit/predict/evaluate pipeline
+├── search_model.py      # SearchModel — expression state, size metrics, fitness
+├── filters.py           # Expression validity filters (size, coefficients, powers)
+├── algebra.py           # Symbolic expand/factor/simplify
+├── memoize.py           # Hash-based expression deduplication
+├── fitness_funcs.py     # Multi-objective fitness construction
+├── selection.py         # NSGA-II, SPEA-II, log-ND sort (from DEAP)
+├── expand.py            # Grower — grammar-based expression enumeration
+└── search.py            # PGE — main search loop orchestration
 ```
 
-### Core Components
+## Public API
 
-#### `JAXModel` (model.py)
+### `PGE` — End-to-End Search
 
-Wraps a sympy expression and provides JAX-compatible evaluation. This is the JAX equivalent of pypge's `Model` class.
+The primary entry point. Wraps the full search pipeline:
 
-**Key responsibilities:**
-- Parse sympy expressions to extract coefficient symbols (`C_*`) and input variables
-- Build JAX-traceable prediction functions via `sympy.lambdify(modules="jax")`
-- Compute Jacobian matrices using `jax.jacfwd` + `jax.vmap`
-- Provide `predict()`, `jacobian()`, and `pretty_expr()` methods
-
-**Symbol convention:**
-- Symbols starting with `C_` or `C[` are treated as optimizable coefficients
-- All other free symbols in the expression are input variables
-- Both lists are sorted by string name for deterministic ordering
-
-**Example:**
 ```python
+from pge_jax import PGE
+
+pge = PGE(
+    usable_vars=["x0", "x1"],   # or "x0 x1" or list of sympy.Symbol
+    usable_funcs=["sin", "cos", "exp", "log", "tan", "sqrt"],
+    max_iter=100,               # search iterations
+    pop_count=3,                # models expanded per expander per iteration
+    peek_count=6,               # models selected from peek heap for full eval
+    peek_npts=16,               # data points for fast partial (peek) evaluation
+    max_size=64,                # max expression tree size
+    max_power=5,                # max power exponent
+    algebra_methods=["expand", "factor"],
+    err_method="mse",           # error metric for score
+    random_seed=23,
+)
+
+pge.fit(X_train, Y_train)          # sklearn-style: returns self
+best = pge.get_best_model()        # SearchModel with lowest score
+paretos = pge.get_final_paretos()  # list[list[SearchModel]]
+```
+
+### `SearchModel` — Expression State
+
+Wraps a sympy expression with lifecycle state, size metrics, and fitness:
+
+```python
+from pge_jax import SearchModel
 import sympy
-from pge_jax import JAXModel
 
 x = sympy.Symbol("x")
-c0, c1 = sympy.symbols("C_0 C_1")
-expr = c0 * x + c1
+c0 = sympy.Symbol("C_0")
+expr = c0 * x + 1
 
-model = JAXModel(expr)
-# model.n_coeffs == 2, model.n_vars == 1
+model = SearchModel(expr, xs=[x], cs=[c0])
+model.rewrite_coeff()   # builds JAXModel wrapper, converts bare C → C_0, C_1, ...
 
-import jax.numpy as jnp
-pred = model.predict(jnp.array([2.0, 3.0]), jnp.array([1.0, 2.0, 3.0]))
-# Returns: [5.0, 7.0, 9.0]
+model.size()            # tree size
+model.psz               # penalised size (+2 per function node)
+model.jpsz              # penalised Jacobian size
+model.score             # RMSE after fitting
+model.r2                # R-squared
+model.pretty_expr()     # expression with fitted coefficients substituted
 ```
 
-#### Optimizers (optimize.py)
+### `JAXModel` — Pure JAX Evaluation
 
-##### `fit_levenberg_marquardt()`
+For users who want to evaluate a specific expression without the search loop:
 
-Custom Levenberg-Marquardt optimizer implemented entirely in JAX. Solves:
-
-$$\min_\beta \sum_i r_i(\beta)^2$$
-
-where $r_i$ are the residuals of the model prediction.
-
-**Algorithm:**
-1. Compute initial Jacobian via `jax.jacfwd`
-2. Initialize damping parameter $\mu = \text{damping} \times \max(\text{diag}(J^T J))$
-3. Iterate:
-   - Solve damped normal equations: $(J^T J + \mu I) d = -J^T r$
-   - Accept step if cost decreases
-   - Adjust damping based on improvement ratio
-4. Converge when cost change or coefficient change falls below tolerance
-
-**Parameters:**
-- `model_predict`: Callable `(coefs) -> predictions`, must be JAX-transformable
-- `y_true`: Target values, shape `(n_samples,)`
-- `x0`: Initial coefficient guess (defaults to zeros)
-- `jac`: Optional analytic Jacobian (defaults to `jax.jacfwd`)
-- `max_iter`: Maximum iterations (default: 200)
-- `tol`: Convergence tolerance (default: 1e-4)
-- `damping`: Initial damping $\mu$ (default: 1e-6)
-- `damping_factor`: Multiplier for increasing/decreasing damping (default: 2.0)
-
-**Returns:** `FitResult` dataclass with coefficients, predictions, cost, success flag, and metadata.
-
-##### `fit_least_squares()`
-
-Wrapper around `jax.scipy.optimize.minimize` using BFGS method. Useful when you prefer a battle-tested solver over custom LM.
-
-**Features:**
-- Automatic gradient computation via JAX autodiff
-- Optional bounds via penalty method (JAX's minimize doesn't support bounds natively)
-
-#### Metrics (metrics.py)
-
-JAX-native implementations of standard regression metrics:
-
-| Function | Formula | Notes |
-|----------|---------|-------|
-| `rmse` | $\sqrt{\frac{1}{n}\sum (y_i - \hat{y}_i)^2}$ | Root mean squared error |
-| `mae` | $\frac{1}{n}\sum |y_i - \hat{y}_i|$ | Mean absolute error |
-| `mse` | $\frac{1}{n}\sum (y_i - \hat{y}_i)^2$ | Mean squared error |
-| `r2` | $1 - \frac{SS_{res}}{SS_{tot}}$ | R-squared coefficient of determination |
-| `explained_variance` | $1 - \frac{\text{Var}(y - \hat{y})}{\text{Var}(y)}$ | Explained variance score |
-| `aic` | $n \log(\text{RSS}/n) + 2k$ | Akaike information criterion |
-| `bic` | $n \log(\text{RSS}/n) + k \log(n)$ | Bayesian information criterion |
-| `chisqr` | $\sum (y_i - \hat{y}_i)^2$ | Chi-squared statistic |
-| `redchi` | $\chi^2 / (n - k)$ | Reduced chi-squared |
-| `rmae` | $\text{MAE} / \overline{|y|}$ | Relative MAE |
-
-All metrics are JAX-transformable and work with `jax.grad`, `jax.vmap`, etc.
-
-#### Evaluation Pipeline (evaluate.py)
-
-High-level functions for fitting and evaluating models:
-
-- `fit_model(model, y_true, *x_inputs, max_iter=200, method="lm")`: Fit model coefficients
-- `predict(model, coefs, *x_inputs)`: Evaluate model with given coefficients
-- `evaluate(model, y_true, y_pred, n_params=None)`: Compute all metrics, returns `EvalResult`
-
-**Example:**
 ```python
 from pge_jax import JAXModel, fit_model, evaluate
 import jax.numpy as jnp
@@ -136,125 +128,122 @@ c0, c1 = sympy.symbols("C_0 C_1")
 expr = c0 * x + c1
 
 model = JAXModel(expr)
-x_data = jnp.array([1.0, 2.0, 3.0, 4.0, 5.0])
-y_data = 2.0 * x_data + 3.0
+result = fit_model(model, jnp.array([3.0, 5.0, 7.0]), jnp.array(x_data))
+print(result.coefficients)  # [2.0, 1.0]
 
-result = fit_model(model, y_data, x_data)
-print(result.coefficients)  # [2.0, 3.0]
-
-eval_result = evaluate(model, y_data, result.predictions)
-print(f"RMSE: {eval_result.score:.6f}")
-print(f"R²: {eval_result.r2:.6f}")
+eval_result = evaluate(model, jnp.array(y_true), result.predictions)
+print(f"R²: {eval_result.r2:.4f}")
 ```
 
-## Setup
+### Individual Components
 
-### Prerequisites
+All modules are importable independently:
 
-- Python 3.11+
-- macOS, Linux, or Windows with CUDA/ROCm for GPU support
+```python
+from pge_jax import (
+    # Filters
+    filter_models, default_filters,
 
-### Installation
+    # Algebra
+    manip_model, do_simp,
 
-```bash
-# Create virtual environment
-python3 -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+    # Memoization
+    Memoizer,
 
-# Install package with all dependencies
-pip install -e ".[dev,benchmark]"
+    # Selection
+    selNSGA2, selSPEA2, sortLogNondominated, isDominated, assignCrowdingDist,
+
+    # Fitness
+    build_fitness_calc, build_fitness_weights, build_value_extractor,
+
+    # Expansion
+    Grower, map_names_to_funcs,
+
+    # Metrics
+    rmse, mae, mse, r2, explained_variance, aic, bic, chisqr, redchi, rmae,
+
+    # Optimizers
+    fit_levenberg_marquardt, fit_least_squares,
+)
 ```
-
-### Optional Dependencies
-
-- `dev`: pytest, ruff, mypy, pre-commit (for development)
-- `benchmark`: scikit-learn, lmfit, pandas (for compatibility with pypge benchmarks)
-- `notebook`: jupyter, matplotlib (for interactive exploration)
-
-## Development
-
-### Running Tests
-
-```bash
-source .venv/bin/activate
-python -m pytest tests/ -v
-```
-
-### Code Quality
-
-```bash
-# Lint with ruff
-ruff check pge_jax/ tests/
-
-# Format with ruff
-ruff format pge_jax/ tests/
-
-# Type check with mypy
-mypy pge_jax/
-```
-
-### Project Configuration
-
-- **Line length:** 120 characters
-- **Target Python:** 3.11+
-- **Linter:** ruff (selects E, F, I, N, W, NPY rules)
-- **Type checker:** mypy (non-strict mode)
 
 ## Design Decisions
 
 ### Why sympy + JAX?
 
-Sympy is retained for expression representation, tree manipulation, expansion, and simplification. The JAX layer replaces only the evaluation and optimization pipeline, providing:
+Sympy handles expression representation, tree manipulation, expansion, and simplification. JAX replaces the evaluation and optimization pipeline, providing GPU acceleration and automatic differentiation.
 
-1. **Performance:** GPU acceleration and JIT compilation
-2. **Differentiability:** Automatic Jacobian computation via `jax.jacfwd`
-3. **Compatibility:** Sympy expressions can still be used with the existing PGE search logic
+### No DEAP Dependency
 
-### Jacobian Computation
+Fitness values are stored directly as tuples on `SearchModel` objects (`fitness_values`, `wvalues`, `crowding_dist`). Selection functions expect these attributes instead of DEAP's `Fitness` wrapper.
 
-The Jacobian matrix $J_{ij} = \partial \hat{y}_i / \partial \beta_j$ is computed using:
-- `jax.jacfwd` for forward-mode autodiff (efficient when #inputs < #outputs)
-- `jax.vmap` to vectorize over data points
+### Two Model Classes
 
-This replaces the symbolic Jacobian computation in pypge (`sympy.diff`) with automatic differentiation.
+- **`JAXModel`** — Pure JAX evaluation wrapper (sympy → JAX, predict, jacobian)
+- **`SearchModel`** — Search-loop state machine (lifecycle flags, size metrics, fitness, selection compatibility)
 
-### Coefficient Extraction
+### Levenberg-Marquardt
 
-Coefficients are identified by symbol name convention:
-- `C_*` or `C[*]` → coefficient
-- Everything else → input variable
+The default optimizer because it's well-suited for least-squares problems, uses the JAX-computed Jacobian efficiently, and matches the original pypge approach.
 
-This matches the pypge convention and allows automatic parsing of sympy expressions.
+### Progressive Evaluation
 
-### Optimizer Choice
+The search uses `peek_npts` (default 16) data points for fast partial evaluation of candidate expressions, then fully evaluates only the most promising ones on all training data. This dramatically reduces the number of expensive full evaluations.
 
-Levenberg-Marquardt is the default because:
-- It's well-suited for least-squares problems (natural fit for symbolic regression)
-- It uses the Jacobian, which we compute efficiently via JAX
-- It's the method used in the original pypge implementation (via lmfit)
+## Installation
 
-## Integration with PGE Search
+```bash
+# Create virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
 
-The `pge_jax` module is designed to integrate with the PGE search algorithm (to be implemented). The typical workflow:
+# Install from source
+pip install -e ".[dev]"
 
-1. **Generate expressions** using sympy tree manipulation (from pypge's expand.py)
-2. **Create JAXModel** for each expression
-3. **Fit coefficients** using `fit_model()` or `fit_levenberg_marquardt()`
-4. **Evaluate fitness** using metrics from metrics.py
-5. **Select best models** using NSGA-II or other multi-objective selection
-6. **Expand selected models** to generate children
-7. **Repeat** until convergence or iteration limit
+# Or with benchmark dependencies (for pypge compatibility)
+pip install -e ".[dev,benchmark]"
+```
+
+### Optional Dependencies
+
+| Group | Packages | Purpose |
+|-------|----------|---------|
+| `dev` | pytest, ruff, mypy, pre-commit | Development tooling |
+| `benchmark` | scikit-learn, lmfit, pandas | Compatibility with pypge benchmarks |
+| `notebook` | jupyter, matplotlib | Interactive exploration |
+
+## Development
+
+```bash
+# Run all tests
+python -m pytest tests/ -v
+
+# Lint
+ruff check pge_jax/ tests/
+
+# Format
+ruff format pge_jax/ tests/
+
+# Type check
+mypy pge_jax/
+```
+
+### Configuration
+
+- **Line length:** 120 characters
+- **Target Python:** 3.11+
+- **Linter:** ruff (E, F, I, N, W, NPY rules)
+- **Type checker:** mypy (non-strict mode)
+- **JAX float64:** Enable with `jax.config.update("jax_enable_x64", True)` or `JAX_ENABLE_X64=1` env var
 
 ## Prior Art
 
-- **pypge**: Original Python implementation - https://github.com/verdverm/pypge
-- **go-pge**: Go implementation with performance optimizations - https://github.com/verdverm/go-pge
-- **PySR**: Symbolic regression with JAX - https://github.com/MilesCranmer/pysr
-- **FFX**: Fast feature selection for symbolic regression - https://github.com/ffx-org/ffx
+- **pypge**: Original Python implementation — <https://github.com/verdverm/pypge>
+- **go-pge**: Go implementation with performance optimizations — <https://github.com/verdverm/go-pge>
+- **PySR**: Symbolic regression with JAX — <https://github.com/MilesCranmer/pysr>
+- **FFX**: Fast feature selection for symbolic regression — <https://github.com/ffx-org/ffx>
 
 ## Citation
 
-If you use this library in academic work, please cite the original PGE paper:
-
-> "Prioritized Grammar Enumeration" - Best Paper, GECCO 2013
-> http://dl.acm.org/citation.cfm?id=2463486
+> "Prioritized Grammar Enumeration" — Best Paper, GECCO 2013
+> <http://dl.acm.org/citation.cfm?id=2463486>

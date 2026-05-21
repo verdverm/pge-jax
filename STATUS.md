@@ -2,7 +2,7 @@
 
 ## Summary
 
-The full PGE search loop has been ported from `pypge/pypge/` to `pge_jax/`. All 86 tests pass.
+The full PGE search loop has been ported from `pypge/pypge/` to `pge_jax/`. All 90 tests pass.
 
 ## What Was Built
 
@@ -15,34 +15,38 @@ The full PGE search loop has been ported from `pypge/pypge/` to `pge_jax/`. All 
 | `pge_jax/memoize.py` | ~75 | Hash-based expression deduplication (`Memoizer` class) |
 | `pge_jax/selection.py` | ~440 | NSGA-II, SPEA-II, tournament selection, log-ND sort (from DEAP) |
 | `pge_jax/fitness_funcs.py` | ~145 | Multi-objective fitness construction (normalized + raw) |
-| `pge_jax/search_model.py` | ~350 | Search-loop-aware model with state flags, size metrics, JAX wrapper |
+| `pge_jax/search_model.py` | ~356 | Search-loop-aware model with state flags, size metrics, JAX wrapper |
 | `pge_jax/expand.py` | ~480 | `Grower` class — grammar-based expression enumeration (5 operators) |
-| `pge_jax/search.py` | ~690 | `PGE` class — main search loop orchestration |
+| `pge_jax/search.py` | ~691 | `PGE` class — main search loop orchestration |
 
 ### Updated
 
 | File | Change |
 |---|---|
 | `pge_jax/__init__.py` | Added 20 new exports (filters, algebra, memoize, selection, fitness, expand, search) |
-| `AGENTS.md` | Added full PGE architecture reference, porting order, design decisions |
+| `pge_jax/search_model.py` | Added `values` property for DEAP selection compatibility |
+| `pge_jax/search.py` | Fixed `_set_data` row indexing, improved `get_best_model()` |
+| `pge_jax/selection.py` | Added empty list guards in `selNSGA2` and `sortLogNondominated` |
+| `pyproject.toml` | Added ruff ignores for DEAP/sympy naming conventions |
+| `AGENTS.md` | Updated to reflect completed port |
 
 ### Tests
 
 | File | Tests | Coverage |
 |---|---|---|
-| `tests/test_search.py` | 45 | SearchModel, filters, algebra, memoize, selection, fitness, expand |
+| `tests/test_search.py` | 49 | SearchModel, filters, algebra, memoize, selection, fitness, expand, integration |
 
-**Total: 86 tests passing** (41 existing + 45 new)
+**Total: 90 tests passing** (41 existing + 49 new)
 
 ## Architecture
 
 ```
 sympy.Expr → SearchModel → Grower.first_exprs() → Filter → Memoize → Algebra
-                                                        → Filter → Memoize
-                                                        → PGE._eval_models() (peek)
-                                                        → PGE._peek_pop() (NSGA-II)
-                                                        → PGE._eval_models() (full)
-                                                        → PGE._final_push() → final list
+                                                         → Filter → Memoize
+                                                         → PGE._eval_models() (peek)
+                                                         → PGE._peek_pop() (NSGA-II)
+                                                         → PGE._eval_models() (full)
+                                                         → PGE._final_push() → final list
 ```
 
 ### Key Design Decisions
@@ -58,11 +62,9 @@ sympy.Expr → SearchModel → Grower.first_exprs() → Filter → Memoize → A
 
 ### Low Priority
 
-- **Integration test** — end-to-end `PGE.fit(X, Y)` with real data
 - **`ExpanderConfig` usage** — multi-expander parameter wiring
 - **Progress logging** — tqdm progress bars in the search loop
 - **`print_best()`** — formatting improvements, column output
-- **`get_best_model()`** — validation that it returns the RMSE-optimal model
 
 ### Not Ported (Out of Scope)
 
@@ -105,7 +107,7 @@ print(best.pretty_expr())
 # All tests
 python -m pytest tests/ -v
 
-# New search loop tests only
+# Search loop tests only
 python -m pytest tests/test_search.py -v
 
 # Lint

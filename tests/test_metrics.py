@@ -5,16 +5,15 @@ import numpy as np
 import pytest
 
 from pge_jax.metrics import (
-    rmse,
-    mae,
-    mse,
-    r2,
-    explained_variance,
     aic,
     bic,
     chisqr,
-    redchi,
+    explained_variance,
+    mae,
+    mse,
+    r2,
     rmae,
+    rmse,
 )
 
 

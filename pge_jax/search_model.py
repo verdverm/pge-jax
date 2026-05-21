@@ -12,7 +12,7 @@ filtering, memoization, expansion, evaluation, and selection.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Optional, Tuple
+from typing import TYPE_CHECKING, Optional, Tuple
 
 import sympy
 
@@ -189,6 +189,11 @@ class SearchModel:
     def __hash__(self) -> int:
         return self.id
 
+    @property
+    def values(self) -> Tuple[float, ...]:
+        """Raw fitness values for DEAP-style selection compatibility."""
+        return self.fitness_values
+
     def __str__(self) -> str:
         if self.pretty is None:
             self.pretty_expr()
@@ -292,7 +297,6 @@ class SearchModel:
         """
         from pge_jax.model import JAXModel as _JAXModel
 
-        C_sym = sympy.Symbol("C")
         ii = 0
         expr, ii = self._rewrite_coeff_helper(self.orig, 0)
         self.expr = expr

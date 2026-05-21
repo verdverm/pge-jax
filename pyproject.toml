@@ -62,6 +62,15 @@ line-length = 120
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "NPY"]
+ignore = [
+    "E741",  # ambiguous variable names (l, I) — from DEAP port
+    "F841",  # unused local variables — sympy/math patterns use these
+    "N802",  # function names — DEAP API (selNSGA2, sortLogNondominated, etc.)
+    "N803",  # argument names — conventional (X_train, Y_train)
+    "N806",  # variable names — sympy/math conventions (B, E, J, N, K)
+    "N812",  # import aliases — from pypge (combos_woutR, combos_withR)
+    "NPY002", # legacy numpy random — acceptable for now
+]
 
 [tool.mypy]
 python_version = "3.11"

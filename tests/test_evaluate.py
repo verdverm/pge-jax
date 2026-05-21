@@ -5,8 +5,8 @@ import numpy as np
 import pytest
 import sympy
 
+from pge_jax.evaluate import evaluate, fit_model, predict
 from pge_jax.model import JAXModel
-from pge_jax.evaluate import fit_model, predict, evaluate
 
 
 class TestFitModel:

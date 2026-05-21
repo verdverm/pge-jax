@@ -8,8 +8,6 @@ from __future__ import annotations
 
 from typing import Dict, Optional, Tuple
 
-import sympy
-
 from pge_jax.search_model import SearchModel
 
 

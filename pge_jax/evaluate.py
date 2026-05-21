@@ -4,20 +4,20 @@ from dataclasses import dataclass
 
 import jax.numpy as jnp
 
-from pge_jax.model import JAXModel
-from pge_jax.optimize import FitResult, fit_levenberg_marquardt
 from pge_jax.metrics import (
-    rmse,
-    mae,
-    mse,
-    r2,
-    explained_variance,
     aic,
     bic,
     chisqr,
+    explained_variance,
+    mae,
+    mse,
+    r2,
     redchi,
     rmae,
+    rmse,
 )
+from pge_jax.model import JAXModel
+from pge_jax.optimize import FitResult, fit_levenberg_marquardt
 
 
 @dataclass

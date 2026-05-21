@@ -2,23 +2,28 @@
 
 from __future__ import annotations
 
-import sympy
 import pytest
+import sympy
 
-from pge_jax.search_model import SearchModel
+from pge_jax.algebra import do_simp, manip_model
+from pge_jax.expand import Grower, map_names_to_funcs
 from pge_jax.filters import (
     default_filters,
     filter_has_big_pow,
     filter_has_coeff_pow,
     filter_has_int_coeff,
     filter_just_C,
-    filter_model,
     filter_models,
     filter_no_C,
     filter_too_big,
 )
-from pge_jax.algebra import do_simp, manip_model
+from pge_jax.fitness_funcs import (
+    build_fitness_calc,
+    build_fitness_weights,
+    build_value_extractor,
+)
 from pge_jax.memoize import Memoizer
+from pge_jax.search_model import SearchModel
 from pge_jax.selection import (
     assignCrowdingDist,
     isDominated,
@@ -27,12 +32,6 @@ from pge_jax.selection import (
     sortLogNondominated,
     sortNondominated,
 )
-from pge_jax.fitness_funcs import (
-    build_fitness_calc,
-    build_fitness_weights,
-    build_value_extractor,
-)
-from pge_jax.expand import Grower, map_names_to_funcs
 
 
 class TestSearchModel:
@@ -445,3 +444,124 @@ class TestExpand:
         exprs = [x + 1, x + 1, x + 2, 2 * x]
         unique = grower._uniquify(exprs)
         assert len(unique) == 3
+
+
+class TestIntegration:
+    """End-to-end integration tests for the PGE search loop."""
+
+    def test_pge_single_var(self):
+        import jax
+
+        jax.config.update("jax_enable_x64", True)
+
+        import numpy as np
+
+        from pge_jax import PGE
+
+        np.random.seed(42)
+        X = np.random.randn(50, 1)
+        Y = 3.0 * X[:, 0] + 1.5
+
+        pge = PGE(
+            usable_vars=["x0"],
+            usable_funcs=["sin", "cos"],
+            max_iter=2,
+            pop_count=2,
+            peek_npts=8,
+            random_seed=42,
+        )
+        pge.fit(X, Y)
+
+        best = pge.get_best_model()
+        assert best is not None
+        assert best.score is not None
+        assert best.r2 is not None
+        assert best.r2 > 0.5
+
+        paretos = pge.get_final_paretos()
+        assert paretos is not None
+        assert len(paretos) > 0
+        assert len(paretos[0]) > 0
+
+    def test_pge_multi_var(self):
+        import jax
+
+        jax.config.update("jax_enable_x64", True)
+
+        import numpy as np
+
+        from pge_jax import PGE
+
+        np.random.seed(42)
+        X = np.random.randn(80, 2)
+        Y = 2.0 * X[:, 0] + 1.5 * X[:, 1] ** 2 - 0.5 * np.sin(X[:, 0])
+
+        pge = PGE(
+            usable_vars=["x0", "x1"],
+            usable_funcs=["sin", "cos", "exp"],
+            max_iter=3,
+            pop_count=3,
+            peek_npts=10,
+            random_seed=42,
+        )
+        pge.fit(X, Y)
+
+        best = pge.get_best_model()
+        assert best is not None
+        assert best.r2 is not None
+        assert best.r2 > 0.3
+
+        paretos = pge.get_final_paretos()
+        assert paretos is not None
+        assert len(paretos) > 0
+
+    def test_pge_chainable(self):
+        """PGE.fit() returns self for chaining."""
+        import jax
+
+        jax.config.update("jax_enable_x64", True)
+
+        import numpy as np
+
+        from pge_jax import PGE
+
+        np.random.seed(42)
+        X = np.random.randn(30, 1)
+        Y = 2.0 * X[:, 0]
+
+        pge = PGE(
+            usable_vars=["x0"],
+            max_iter=1,
+            pop_count=2,
+            random_seed=42,
+        )
+        result = pge.fit(X, Y)
+        assert result is pge
+
+    def test_pge_no_functions(self):
+        """PGE with only polynomial terms (no functions)."""
+        import jax
+
+        jax.config.update("jax_enable_x64", True)
+
+        import numpy as np
+
+        from pge_jax import PGE
+
+        np.random.seed(42)
+        X = np.random.randn(40, 1)
+        Y = 1.0 + 2.0 * X[:, 0] + 3.0 * X[:, 0] ** 2
+
+        pge = PGE(
+            usable_vars=["x0"],
+            usable_funcs=[],
+            max_iter=2,
+            pop_count=2,
+            random_seed=42,
+        )
+        pge.fit(X, Y)
+
+        best = pge.get_best_model()
+        assert best is not None
+        assert best.r2 is not None
+        assert best.r2 > 0.5

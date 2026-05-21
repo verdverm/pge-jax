@@ -10,28 +10,24 @@ from __future__ import annotations
 import random
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import jax.numpy as jnp
 import numpy as np
 import sympy
-from tqdm import tqdm
 
 from pge_jax.algebra import manip_model
+from pge_jax.evaluate import evaluate, fit_model
 from pge_jax.expand import Grower, map_names_to_funcs
-from pge_jax.evaluate import fit_model, evaluate
 from pge_jax.filters import filter_models
-from pge_jax.memoize import Memoizer
-from pge_jax.model import JAXModel
 from pge_jax.search_model import SearchModel
 from pge_jax.selection import (
-    assignCrowdingDist,
     selNSGA2,
     sortLogNondominated,
 )
 
 if TYPE_CHECKING:
-    from pge_jax.fitness_funcs import Callable
+    pass
 
 # ---------------------------------------------------------------------------
 # Default fitness parameters (minimise size + error, maximise R²)
@@ -232,7 +228,7 @@ class PGE:
         # Sample peek data
         if self.peek_npts > 0 and self.peek_npts < self.eval_npts:
             pos = np.random.choice(self.eval_npts, self.peek_npts, replace=False)
-            self.X_peek = self.X_train[:, pos]
+            self.X_peek = self.X_train[pos, :]
             self.Y_peek = self.Y_train[pos]
         else:
             self.X_peek = self.X_train
@@ -537,10 +533,10 @@ class PGE:
     def _get_default_filters(self) -> list:
         """Return the default filter list with configured max_size."""
         from pge_jax.filters import (
-            filter_just_C,
             filter_has_big_pow,
             filter_has_coeff_pow,
             filter_has_int_coeff,
+            filter_just_C,
             filter_no_C,
             filter_too_big,
         )
@@ -684,12 +680,19 @@ class PGE:
         return self.final_paretos
 
     def get_best_model(self) -> Optional[SearchModel]:
-        """Return the single best model (lowest RMSE on the first Pareto front).
+        """Return the single best model (lowest score across all Pareto fronts).
 
         Returns
         -------
         SearchModel | None
         """
-        if not self.final_paretos or not self.final_paretos[0]:
+        if not self.final_paretos:
             return None
-        return self.final_paretos[0][0]
+        best = None
+        best_score = float("inf")
+        for front in self.final_paretos:
+            for m in front:
+                if m.score is not None and m.score < best_score:
+                    best_score = m.score
+                    best = m
+        return best

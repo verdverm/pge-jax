@@ -2,7 +2,6 @@
 
 import jax.numpy as jnp
 import numpy as np
-import pytest
 import sympy
 
 from pge_jax.model import JAXModel, _extract_coeffs_and_vars

@@ -1,10 +1,9 @@
 """Tests for pge_jax.optimize module."""
 
 import jax.numpy as jnp
-import numpy as np
 import pytest
 
-from pge_jax.optimize import fit_levenberg_marquardt, fit_least_squares, FitResult
+from pge_jax.optimize import FitResult, fit_least_squares, fit_levenberg_marquardt
 
 
 class TestFitLevenbergMarquardt:
