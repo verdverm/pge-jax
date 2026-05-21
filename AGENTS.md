@@ -4,24 +4,24 @@
 
 ```
 pge-jax/
-├── pge_jax/          # Package source
-│   ├── __init__.py   # Public API — add new exports here
-│   ├── model.py      # JAXModel: sympy → JAX evaluation wrapper
-│   ├── optimize.py   # LM and BFGS optimizers
-│   ├── metrics.py    # JAX-native regression metrics
-│   ├── evaluate.py   # High-level fit/predict/evaluate pipeline
-│   ├── search_model.py  # SearchModel: state, size metrics, fitness
-│   ├── filters.py    # Expression validity filters
-│   ├── algebra.py    # Symbolic expand/factor/simplify
-│   ├── memoize.py    # Hash-based expression deduplication
+├── pge_jax/              # Package source
+│   ├── __init__.py       # Public API exports
+│   ├── model.py          # JAXModel: sympy → JAX evaluation wrapper
+│   ├── optimize.py       # LM and BFGS optimizers
+│   ├── metrics.py        # JAX-native regression metrics
+│   ├── evaluate.py       # High-level fit/predict/evaluate pipeline
+│   ├── search_model.py   # SearchModel: state, size, fitness
+│   ├── filters.py        # Expression validity filters
+│   ├── algebra.py        # Symbolic expand/factor/simplify
+│   ├── memoize.py        # Hash-based expression deduplication
 │   ├── fitness_funcs.py  # Multi-objective fitness construction
-│   ├── selection.py  # NSGA-II, SPEA-II, log-ND sort
-│   ├── expand.py     # Grower: grammar-based expression enumeration
-│   └── search.py     # PGE: main search loop orchestration
-├── tests/            # pytest test suite
-├── pyproject.toml    # Build config, deps, tool settings
-├── README.md         # User-facing documentation
-└── AGENTS.md         # This file
+│   ├── selection.py      # NSGA-II, SPEA-II, log-ND sort
+│   ├── expand.py         # Grower: grammar-based expression enumeration
+│   └── search.py         # PGE: main search loop orchestration
+├── tests/                # pytest test suite
+├── pyproject.toml        # Build config, deps, tool settings
+├── README.md             # User-facing documentation
+└── AGENTS.md             # This file
 ```
 
 ## Running the Code
@@ -75,23 +75,21 @@ mypy pge_jax/
 
 ### Evaluation Pipeline
 
-```
-sympy.Expr → JAXModel.__init__() → jax_fun, jac_fun
-                                 → fit_levenberg_marquardt()
-                                 → FitResult(coefficients, predictions, cost, ...)
-                                 → evaluate() → EvalResult(all metrics)
-```
+1. `JAXModel.__init__()` wraps sympy Expr, compiles `jax_fun` + `jac_fun`
+2. `fit_levenberg_marquardt()` optimizes coefficients → `FitResult`
+3. `evaluate()` computes all regression metrics → `EvalResult`
 
 ### Search Pipeline
 
-```
-sympy.Expr → SearchModel → Grower.first_exprs() → Filter → Memoize → Algebra
-                                                         → Filter → Memoize
-                                                         → PGE._eval_models() (peek)
-                                                         → PGE._peek_pop() (NSGA-II)
-                                                         → PGE._eval_models() (full)
-                                                         → PGE._final_push() → final list
-```
+1. `Grower.first_exprs()` — seed expressions from grammar
+2. `filter_models()` — reject invalid expressions
+3. `Memoizer` — skip already-seen expressions
+4. `manip_model()` — symbolic expand/factor/simplify
+5. `filter_models()` + `Memoizer` — dedup algebraic variants
+6. `PGE._eval_models()` — peek evaluation on `peek_npts` subset
+7. `PGE._peek_pop()` — NSGA-II selection to keep promising candidates
+8. `PGE._eval_models()` — full evaluation on all training data
+9. `PGE._final_push()` — accumulate into final Pareto front
 
 ### Key Types
 
@@ -203,25 +201,3 @@ The `selection.py` functions expect specific attributes on model objects:
 1. Add function to `pge_jax/filters.py` — takes `(modl: SearchModel, expr)` returns `True` if rejected
 2. Add to `default_filters` list
 3. Add tests in `tests/test_search.py::TestFilters`
-
-## Current State
-
-All 86 tests pass. The full PGE search loop is complete and tested:
-
-| Module | Status |
-|--------|--------|
-| `JAXModel` + evaluation pipeline | Done |
-| `SearchModel` + state tracking | Done |
-| Filters, algebra, memoization | Done |
-| Multi-objective fitness + selection | Done |
-| `Grower` expression expansion | Done |
-| `PGE` search loop orchestration | Done |
-| Integration tests (end-to-end) | Done |
-
-### Remaining Work
-
-- **`ExpanderConfig`** — multi-expander parameter wiring
-- **Progress logging** — tqdm progress bars in the search loop
-- **`print_best()`** — formatting improvements, column output
-- **Benchmark problems** — Koza, Lipson, Nguyen benchmark suite
-- **`parallel.py`** — multiprocessing workers (JAX/XLA handles parallelism, can add later)

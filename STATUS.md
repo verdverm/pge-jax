@@ -9,11 +9,14 @@ The full PGE search loop has been ported from `pypge/pypge/` to `pge_jax/`. All 
 ### `expand.py` — Fixed `with_c_*` function pools
 The `with_c_linear_funcs` and `with_c_nonlin_funcs` pools were producing `f(x)` instead of `C * f(x)`. This meant the search could find `sin(x0) + C_0` but never `C_0 * sin(x0)`, preventing coefficient-scaled function terms from being discovered. Changed lines 158-159 to `C * f(...)` pattern.
 
-### `search.py` — `finalize()` table formatting
-Added column headers and 2-decimal formatting to the final results table. Previously the output had no headers and 6-decimal precision, making it hard to read.
-
 ### `search.py` — Deduplication at finalize
 The `finalize()` method was concatenating `self.final` with `nsga2_list` from each multi-expander without deduplication, since each expeder has its own `Memoizer`. Added structural deduplication using `str(sympy.sympify(expr))` to collapse duplicates across expander boundaries.
+
+### `search_model.py` + `search.py` — Unified number formatting with `fmt()`
+Added `SearchModel.fmt(v, n)` — a single helper for all numeric formatting. Uses plain format (e.g., `185`, `0.12`) for exponents in `[-n, n]`, E notation (e.g., `1.23e3`, `4.6e-3`) otherwise. Shared between table metrics and expression coefficients. `finalize(n_solutions=32, n=2)` accepts both row limit and exponent threshold. Dynamic column widths computed from formatted values.
+
+### `search_model.py` — `SearchModel.fmt()` method
+`fmt(v, n)` uses `math.log10()` to determine exponent, applies plain `g` format or E notation. Handles `None`, `0`, and non-finite values as special cases. `pretty_expr(n=2)` uses `fmt()` for coefficient substitution. `__str__()` uses `fmt()` with computed column widths.
 
 ## What Was Built
 
@@ -51,14 +54,15 @@ The `finalize()` method was concatenating `self.final` with `nsga2_list` from ea
 
 ## Architecture
 
-```
-sympy.Expr → SearchModel → Grower.first_exprs() → Filter → Memoize → Algebra
-                                                         → Filter → Memoize
-                                                         → PGE._eval_models() (peek)
-                                                         → PGE._peek_pop() (NSGA-II)
-                                                         → PGE._eval_models() (full)
-                                                         → PGE._final_push() → final list
-```
+1. `Grower.first_exprs()` — seed expressions from grammar
+2. `filter_models()` — reject invalid expressions
+3. `Memoizer` — skip already-seen expressions
+4. `manip_model()` — symbolic expand/factor/simplify
+5. `filter_models()` + `Memoizer` — dedup algebraic variants
+6. `PGE._eval_models()` — peek evaluation on `peek_npts` subset
+7. `PGE._peek_pop()` — NSGA-II selection to keep promising candidates
+8. `PGE._eval_models()` — full evaluation on all training data
+9. `PGE._final_push()` — accumulate into final Pareto front
 
 ### Key Design Decisions
 
@@ -73,7 +77,6 @@ sympy.Expr → SearchModel → Grower.first_exprs() → Filter → Memoize → A
 
 ### Low Priority
 
-- **`ExpanderConfig` usage** — multi-expander parameter wiring
 - **Progress logging** — tqdm progress bars in the search loop
 - **Deduplication during search** — `Memoizer` uses `sympy.Expr.__hash__()` which breaks when coefficient symbols differ across expanders (e.g. `C_0` vs `C_4`); needs structural equality check
 - **Full 3-term discovery** — the target formula `3.0*x0 + 1.5*x1**2 - 0.5*sin(x0)` (R² ≈ 1.0) has not appeared yet; may need higher `pop_count` or `peek_count`
