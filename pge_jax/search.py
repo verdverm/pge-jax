@@ -637,8 +637,17 @@ class PGE:
     # Finalize
     # ------------------------------------------------------------------
 
-    def finalize(self, nfronts: int = 4) -> None:
-        """Generate final Pareto fronts and print results."""
+    def finalize(self, n_solutions: int = 32, n: int = 2) -> None:
+        """Generate final Pareto fronts and print results.
+
+        Parameters
+        ----------
+        n_solutions:
+            Maximum number of rows to print in the final results table.
+        n:
+            Exponent threshold for number formatting.  Values with
+            exponent in [-n, n] use plain format; others use E notation.
+        """
         print("\nFinalizing\n")
 
         # Combine final + remaining population
@@ -662,25 +671,75 @@ class PGE:
         # Print results
         print("Final Results")
         if self.final_paretos:
-            header = (
-                f"{'id':>5}  {'iter':>5}  {'parent':>5}    "
-                f"{'sz':>3}  {'psz':>3}  {'jsz':>3}  {'jpsz':>3}    "
-                f"{'score':>10}  {'r2':>8}  {'evar':>8}  "
-                f"{'aic':>12}  {'bic':>12}  {'redchi':>12}  |  {'expr':s}"
-            )
-            print(header)
-            print("-" * 140)
-            for i, front in enumerate(self.final_paretos[:nfronts]):
+            rows: List[tuple] = []
+            exprs: List[str] = []
+            for front in self.final_paretos:
                 for m in front:
-                    m.pretty_expr()
-                    line = (
-                        f"{m.id:5d}  {m.iter_id:5d}  {m.parent_id:5d}    "
-                        f"{m.size():3d}  {m.psz:3d}  {m.jsz:3d}  {m.jpsz:3d}    "
-                        f"{m.score or 0:10.2f}  {m.r2 or 0:8.2f}  {m.evar or 0:8.2f}  "
-                        f"{m.aic or 0:12.2f}  {m.bic or 0:12.2f}  {m.redchi or 0:12.2f}  |  {m.pretty}"
+                    if len(rows) >= n_solutions:
+                        break
+                    m.pretty_expr(n)
+                    rows.append(
+                        (
+                            m.id,
+                            m.iter_id,
+                            m.parent_id,
+                            m.size(),
+                            m.psz,
+                            m.jsz,
+                            m.jpsz,
+                            m.score,
+                            m.r2,
+                            m.evar,
+                            m.aic,
+                            m.bic,
+                            m.redchi,
+                        )
                     )
-                    print(line)
-                print("")
+                    exprs.append(m.pretty)
+                if len(rows) >= n_solutions:
+                    break
+
+            num_headers = [
+                "id",
+                "iter",
+                "parent",
+                "sz",
+                "psz",
+                "jsz",
+                "jpsz",
+                "score",
+                "r2",
+                "evar",
+                "aic",
+                "bic",
+                "redchi",
+            ]
+
+            # Format all values and compute column widths
+            all_formatted: List[List[str]] = []
+            for row in rows:
+                formatted = []
+                for i, val in enumerate(row):
+                    if i < 7:
+                        formatted.append(str(val))
+                    else:
+                        formatted.append(SearchModel.fmt(val, n))
+                all_formatted.append(formatted)
+
+            widths = [len(h) for h in num_headers]
+            for formatted in all_formatted:
+                for i, f in enumerate(formatted):
+                    widths[i] = max(widths[i], len(f))
+            widths = [w + 1 for w in widths]  # padding
+
+            # Header
+            print("  ".join(f"{h:>{w}}" for h, w in zip(num_headers, widths)) + "  |  expr")
+            print("  ".join("-" * w for w in widths) + "  |  " + "-" * 20)
+
+            # Rows
+            for formatted, expr in zip(all_formatted, exprs):
+                print("  ".join(f"{f:>{w}}" for f, w in zip(formatted, widths)) + "  |  " + expr)
+            print("")
 
         print(f"\nnum peekd models:  {self.peekd_models}")
         print(f"num evald models:  {self.evald_models}")

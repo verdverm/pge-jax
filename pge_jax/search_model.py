@@ -12,6 +12,7 @@ filtering, memoization, expansion, evaluation, and selection.
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Optional, Tuple
 
 import sympy
@@ -194,34 +195,64 @@ class SearchModel:
         """Raw fitness values for DEAP-style selection compatibility."""
         return self.fitness_values
 
+    @staticmethod
+    def fmt(v, n=2):
+        """Format a number: plain for small exponents, E notation for large.
+
+        Values with exponent in [-n, n] use plain format (e.g. 185, 0.12).
+        Values outside that range use E notation (e.g. 1.5e5, 1.2e-5).
+
+        Parameters
+        ----------
+        v:
+            Value to format.
+        n:
+            Exponent threshold.  n=2 for the default table, n=3 for
+            wider plain-format range.
+
+        Returns
+        -------
+        str
+            Formatted number string.
+        """
+        if v is None or v == 0:
+            return "0"
+        if not math.isfinite(v):
+            return str(v)
+        exp = math.floor(math.log10(abs(v)))
+        if -n <= exp <= n:
+            return f"{v:.{n + 1}g}"
+        s = f"{v:.{n}e}"
+        mantissa, exponent = s.split("e")
+        mantissa = mantissa.rstrip("0").rstrip(".")
+        return f"{mantissa}e{int(exponent)}"
+
     def __str__(self) -> str:
         if self.pretty is None:
             self.pretty_expr()
-        fs = (
-            "{:5d}  {:5d}  {:5d}    {:2d}   {:2d}   {:2d}   {:2d}"
-            "  {:15.6f}  {:10.6f}  {:10.6f}  {:15.6f}  {:15.6f}  {:15.6f}  |  {:s}"
-        )
-        return fs.format(
-            self.id,
-            self.iter_id,
-            self.parent_id,
-            self.size(),
-            self.psz,
-            self.jsz,
-            self.jpsz,
-            self.score or 0,
-            self.r2 or 0,
-            self.evar or 0,
-            self.aic or 0,
-            self.bic or 0,
-            self.redchi or 0,
-            self.pretty,
-        )
+        vals = [self.score, self.r2, self.evar, self.aic, self.bic, self.redchi]
+        headers = ["score", "r2", "evar", "aic", "bic", "redchi"]
+        formatted = [SearchModel.fmt(v) for v in vals]
+        widths = [max(len(h), len(f)) for h, f in zip(headers, formatted)]
+        int_strs = [
+            f"{self.id:5d}",
+            f"{self.iter_id:5d}",
+            f"{self.parent_id:5d}",
+            f"{self.size():3d}",
+            f"{self.psz:3d}",
+            f"{self.jsz:3d}",
+            f"{self.jpsz:3d}",
+        ]
+        float_strs = [f"{f:>{w}}" for f, w in zip(formatted, widths)]
+        return "  ".join(int_strs) + "    " + "  ".join(float_strs) + "  |  " + self.pretty
 
-    def pretty_expr(self, float_format: str = "%.4e") -> str:
+    def pretty_expr(self, n: int = 2) -> str:
         """Substitute fitted coefficient values into the expression."""
         if self.jax_model is not None and self.jax_model.c_values is not None:
-            subs = dict(zip(self.cs, self.jax_model.c_values.tolist()[: self.ncs]))
+            subs = {}
+            for i, c in enumerate(self.cs[: self.ncs]):
+                v = float(self.jax_model.c_values[i])
+                subs[c] = SearchModel.fmt(v, n)
             self.pretty = str(self.expr.subs(subs))
         else:
             self.pretty = str(self.expr)
