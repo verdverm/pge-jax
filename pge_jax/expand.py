@@ -155,8 +155,8 @@ class Grower:
         if self.funcs is not None:
             self.wout_c_linear_funcs: list = [f(x) for f in self.funcs for x in self.wout_c_xs1_muls]
             self.wout_c_nonlin_funcs: list = [f(C * x + C) for f in self.funcs for x in self.wout_c_xs1_muls]
-            self.with_c_linear_funcs: list = [f(x) for f in self.funcs for x in self.wout_c_xs1_muls]
-            self.with_c_nonlin_funcs: list = [f(C * x + C) for f in self.funcs for x in self.wout_c_xs1_muls]
+            self.with_c_linear_funcs: list = [C * f(x) for f in self.funcs for x in self.wout_c_xs1_muls]
+            self.with_c_nonlin_funcs: list = [C * f(C * x + C) for f in self.funcs for x in self.wout_c_xs1_muls]
         else:
             self.wout_c_linear_funcs = []
             self.wout_c_nonlin_funcs = []

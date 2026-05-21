@@ -642,7 +642,16 @@ class PGE:
         print("\nFinalizing\n")
 
         # Combine final + remaining population
-        final = self.final + [m for exp in self.multi_expanders for m in exp["nsga2_list"]]
+        combined = self.final + [m for exp in self.multi_expanders for m in exp["nsga2_list"]]
+
+        # Deduplicate by structural expression equality
+        seen_exprs: set[str] = set()
+        final: List[SearchModel] = []
+        for m in combined:
+            key = str(sympy.sympify(m.orig))
+            if key not in seen_exprs:
+                seen_exprs.add(key)
+                final.append(m)
 
         # Compute fitness
         self._compute_fitness(final)
@@ -653,11 +662,24 @@ class PGE:
         # Print results
         print("Final Results")
         if self.final_paretos:
-            print(str(self.final_paretos[0][0]))
-            print("-" * 100)
+            header = (
+                f"{'id':>5}  {'iter':>5}  {'parent':>5}    "
+                f"{'sz':>3}  {'psz':>3}  {'jsz':>3}  {'jpsz':>3}    "
+                f"{'score':>10}  {'r2':>8}  {'evar':>8}  "
+                f"{'aic':>12}  {'bic':>12}  {'redchi':>12}  |  {'expr':s}"
+            )
+            print(header)
+            print("-" * 140)
             for i, front in enumerate(self.final_paretos[:nfronts]):
                 for m in front:
-                    print(f"  {m}")
+                    m.pretty_expr()
+                    line = (
+                        f"{m.id:5d}  {m.iter_id:5d}  {m.parent_id:5d}    "
+                        f"{m.size():3d}  {m.psz:3d}  {m.jsz:3d}  {m.jpsz:3d}    "
+                        f"{m.score or 0:10.2f}  {m.r2 or 0:8.2f}  {m.evar or 0:8.2f}  "
+                        f"{m.aic or 0:12.2f}  {m.bic or 0:12.2f}  {m.redchi or 0:12.2f}  |  {m.pretty}"
+                    )
+                    print(line)
                 print("")
 
         print(f"\nnum peekd models:  {self.peekd_models}")

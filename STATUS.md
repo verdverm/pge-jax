@@ -4,6 +4,17 @@
 
 The full PGE search loop has been ported from `pypge/pypge/` to `pge_jax/`. All 90 tests pass.
 
+## Recent Changes
+
+### `expand.py` — Fixed `with_c_*` function pools
+The `with_c_linear_funcs` and `with_c_nonlin_funcs` pools were producing `f(x)` instead of `C * f(x)`. This meant the search could find `sin(x0) + C_0` but never `C_0 * sin(x0)`, preventing coefficient-scaled function terms from being discovered. Changed lines 158-159 to `C * f(...)` pattern.
+
+### `search.py` — `finalize()` table formatting
+Added column headers and 2-decimal formatting to the final results table. Previously the output had no headers and 6-decimal precision, making it hard to read.
+
+### `search.py` — Deduplication at finalize
+The `finalize()` method was concatenating `self.final` with `nsga2_list` from each multi-expander without deduplication, since each expeder has its own `Memoizer`. Added structural deduplication using `str(sympy.sympify(expr))` to collapse duplicates across expander boundaries.
+
 ## What Was Built
 
 ### 8 New Modules
@@ -64,7 +75,8 @@ sympy.Expr → SearchModel → Grower.first_exprs() → Filter → Memoize → A
 
 - **`ExpanderConfig` usage** — multi-expander parameter wiring
 - **Progress logging** — tqdm progress bars in the search loop
-- **`print_best()`** — formatting improvements, column output
+- **Deduplication during search** — `Memoizer` uses `sympy.Expr.__hash__()` which breaks when coefficient symbols differ across expanders (e.g. `C_0` vs `C_4`); needs structural equality check
+- **Full 3-term discovery** — the target formula `3.0*x0 + 1.5*x1**2 - 0.5*sin(x0)` (R² ≈ 1.0) has not appeared yet; may need higher `pop_count` or `peek_count`
 
 ### Not Ported (Out of Scope)
 
