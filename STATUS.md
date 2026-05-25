@@ -1,65 +1,154 @@
-# STATUS — PGE JAX Port
+# STATUS — PGE JAX
 
-## Summary
+## Overview
 
-The full PGE search loop has been ported from `pypge/pypge/` to `pge_jax/`. All 90 tests pass.
+Prioritized Grammar Enumeration (PGE) for symbolic regression, implemented in JAX. The core search loop is complete with 92 passing tests. Three major upgrades are planned:
 
-## Recent Changes
-
-### `expand.py` — Fixed `with_c_*` function pools
-The `with_c_linear_funcs` and `with_c_nonlin_funcs` pools were producing `f(x)` instead of `C * f(x)`. This meant the search could find `sin(x0) + C_0` but never `C_0 * sin(x0)`, preventing coefficient-scaled function terms from being discovered. Changed lines 158-159 to `C * f(...)` pattern.
-
-### `search.py` — Deduplication at finalize
-The `finalize()` method was concatenating `self.final` with `nsga2_list` from each multi-expander without deduplication, since each expeder has its own `Memoizer`. Added structural deduplication using `str(sympy.sympify(expr))` to collapse duplicates across expander boundaries.
-
-### `search_model.py` + `search.py` — Unified number formatting with `fmt()`
-Added `SearchModel.fmt(v, n)` — a single helper for all numeric formatting. Uses plain format (e.g., `185`, `0.12`) for exponents in `[-n, n]`, E notation (e.g., `1.23e3`, `4.6e-3`) otherwise. Shared between table metrics and expression coefficients. `finalize(n_solutions=32, n=2)` accepts both row limit and exponent threshold. Dynamic column widths computed from formatted values.
-
-### `search_model.py` — `SearchModel.fmt()` method
-`fmt(v, n)` uses `math.log10()` to determine exponent, applies plain `g` format or E notation. Handles `None`, `0`, and non-finite values as special cases. `pretty_expr(n=2)` uses `fmt()` for coefficient substitution. `__str__()` uses `fmt()` with computed column widths.
-
-## What Was Built
-
-### 8 New Modules
-
-| Module | Lines | Description |
+| Upgrade | Scope | Impact |
 |---|---|---|
-| `pge_jax/filters.py` | ~126 | Expression validity filters (6 filter functions + `default_filters`) |
-| `pge_jax/algebra.py` | ~75 | Symbolic manipulation (`manip_model`, `do_simp` for expand/factor/simplify) |
-| `pge_jax/memoize.py` | ~75 | Hash-based expression deduplication (`Memoizer` class) |
-| `pge_jax/selection.py` | ~440 | NSGA-II, SPEA-II, tournament selection, log-ND sort (from DEAP) |
-| `pge_jax/fitness_funcs.py` | ~145 | Multi-objective fitness construction (normalized + raw) |
-| `pge_jax/search_model.py` | ~356 | Search-loop-aware model with state flags, size metrics, JAX wrapper |
-| `pge_jax/expand.py` | ~480 | `Grower` class — grammar-based expression enumeration (5 operators) |
-| `pge_jax/search.py` | ~691 | `PGE` class — main search loop orchestration |
+| **Peek refactor** | Search loop parameter interface | Behavioral shift: peek off by default, fraction-based |
+| **Coefficient expansion** | Coefficient system + expression generation | New coefficient kinds (named, physical), expression-level dedup |
+| **Grow phase optimization** | Expression enumeration performance | 2–5× speedup, two-model per child architecture |
 
-### Updated
+---
 
-| File | Change |
-|---|---|
-| `pge_jax/__init__.py` | Added 20 new exports (filters, algebra, memoize, selection, fitness, expand, search) |
-| `pge_jax/search_model.py` | Added `values` property for DEAP selection compatibility |
-| `pge_jax/search.py` | Fixed `_set_data` row indexing, improved `get_best_model()` |
-| `pge_jax/selection.py` | Added empty list guards in `selNSGA2` and `sortLogNondominated` |
-| `pyproject.toml` | Added ruff ignores for DEAP/sympy naming conventions |
-| `AGENTS.md` | Updated to reflect completed port |
+## Peek Refactor
 
-### Tests
+### Brief
 
-| File | Tests | Coverage |
+Replace `peek_npts: int = 16` with `peek_fraction: float = 0.0` in the PGE constructor. The old default (16) enabled peek by default. The new default (0.0) disables peek by default — users must opt in with a positive fraction. The fraction scales with dataset size (e.g. `0.2` = 20% of training data).
+
+### Status
+
+**Complete.** All code changes, tests, and documentation updates are done.
+
+- PGE constructor accepts `peek_fraction` instead of `peek_npts`
+- `_set_data()` computes `self.peek_npts = max(1, int(peek_fraction * eval_npts))` and stores it for `finalize()` prints
+- `_preloop()` and `_loop()` check `peek_fraction` instead of `peek_npts`
+- `finalize()` prints preserved via stored `self.peek_npts`
+- Tests updated: `test_pge_single_var` → `peek_fraction=0.16`, `test_pge_multi_var` → `peek_fraction=0.125`
+- New tests: `test_peek_default_off`, `test_peek_fraction_opt_in`
+
+### Todos
+
+None. All done.
+
+### Important Context
+
+- `peek_fraction >= 1` or `<= 0` → skip peek (same as old `peek_npts == 0`)
+- When peek is off, `X_peek`/`Y_peek` are set to full training data (existing behavior)
+- The `_eval_models()` logic is unchanged — it uses `self.X_peek`/`self.Y_peek` without knowing how they were computed
+- `peek_npts` is still stored as an instance attribute so `finalize()` prints report accurate point-eval counts
+
+---
+
+## Coefficient Expansion
+
+### Brief
+
+Extend the coefficient system from a single kind (`C_i`, free optimisable) to three kinds:
+
+| Kind | Symbol | Optimisable? | Lifetime | Use Case |
+|---|---|---|---|---|
+| **Free** | `C_i` | Yes | Per-expression | Standard symbolic regression |
+| **Named** | `N_i` | Yes | Cross-expression | Systems of equations, shared parameters |
+| **Physical** | `P_i` | No | Global constants | `g`, `c`, `k_B`, `h`, `R` |
+
+Key design decisions from user:
+- All three kinds must be grown (combinatorial expansion)
+- Named coefficients support both count-based and name-based indexing
+- Physical constants are user-provided with a built-in registry of well-known constants
+- `SystemModel` wrapper for multi-equation representation (no system fitness yet)
+- LM optimizer treats free + named identically; physical constants are substituted before optimization
+- `P_i` stays readable as named constants in output but is substituted away before JAX compilation
+- New kinds are opt-in via PGE constructor parameters
+
+### Status
+
+**Not started.** Design is complete. No code changes yet.
+
+### Todos
+
+- [ ] Create `pge_jax/coeff_registry.py` — global `CoefficientRegistry` for N_i and P_i
+- [ ] Create `pge_jax/system_model.py` — `SystemModel` wrapper for multi-equation representation
+- [ ] Rename `rewrite_coeff()` → `rewrite_coefficients()` in `SearchModel` — handle C/N/P
+- [ ] Update `model.py` — kind-aware `_extract_coeffs_and_vars()`, P_i substitution before JAX compilation
+- [ ] Update `expand.py` — triple term pools + cross-kind combinations (combinatorial)
+- [ ] Update `memoize.py` — kind-aware hash (same structure + same coefficient indices)
+- [ ] Update `search.py` — PGE accepts `named_count`, `physical_constants`, passes to Grower
+- [ ] Update `filters.py` — `filter_has_int_coeff` allows physical constant values
+- [ ] Update `fitness_funcs.py` — size penalty: free=+1, named=+1 if new/0 if shared, physical=+0
+- [ ] Update `__init__.py` — export new types
+- [ ] Add tests for all new functionality
+
+### Important Context
+
+**Bare C bug** (pre-existing): `grow()` creates child models from bare-`C` term pools without calling `rewrite_coeff()`. Children have `jax_model = None`, `cs = []`, and bare `C` in their expressions. When `jax_model` is eventually built lazily, `_extract_coeffs_and_vars()` puts bare `C` into `vars_` instead of `cs_` because it only recognises `C_` and `C[` prefixes. This is a bug that affects the current single-kind system and will need to be fixed as part of this work.
+
+**Interaction with grow phase optimization** (see below): The coefficient expansion work intersects with the grow phase performance analysis. Specifically, fixing the bare `C` bug requires calling `rewrite_coeff()` in `grow()` before creating children, which currently triggers JAX compilation eagerly. The grow phase optimization proposes deferring JAX compilation, which would make this fix viable without the compilation cost. These two upgrades should be coordinated.
+
+---
+
+## Grow Phase Optimization
+
+### Brief
+
+The grow phase dominates search time at 96% of `search_loop` (~18.8s per iteration). Three architectural issues are identified:
+
+1. `sympy.expand()` is called eagerly in `SearchModel.__init__` for every child, but `SearchModel` is a generic wrapper that shouldn't care about expression normalization
+2. Raw and expanded forms are structurally different trees that produce different children when `grow()` is applied — currently only the expanded form exists (hidden in `__init__`)
+3. Children always fail `filter_no_C` because `cs` is never populated, wasting all downstream filter work
+
+### Status
+
+**Not started.** Performance analysis is documented. No code changes yet.
+
+### Todos
+
+- [ ] Move `sympy.expand()` from `SearchModel.__init__` into `grow()` — it's a grow-level operation, not a wrapper concern
+- [ ] Create two `SearchModel` instances per child: one from raw expression, one from expanded form
+- [ ] Make `expr` lazy in `SearchModel` — only compute on first access (for raw models)
+- [ ] Fix `cs` population for children — call `rewrite_coeff()` in `grow()` before creating child models
+- [ ] Defer JAX compilation — separate `rewrite_coeff()` (symbol rewriting) from `build_jax_model()` (JAX compilation)
+- [ ] Move `_uniquify()` after filtering — deduplicating rejected expressions is wasteful
+- [ ] Reduce branching factor in `grow()` — reduce pool sizes or add size-based pruning during growth
+- [ ] Add benchmarks to measure improvement
+
+### Important Context
+
+**Cost breakdown per iteration (20 parents, ~5,200 children):**
+
+| Phase | Time | % of search_loop |
 |---|---|---|
-| `tests/test_search.py` | 49 | SearchModel, filters, algebra, memoize, selection, fitness, expand, integration |
+| `grow()` — tree traversal + expression construction | ~17.6 s | 96.0% |
+| `_uniquify()` — `evalf()` dedup | ~0.3 s | 1.6% |
+| `SearchModel.__init__` — `sympy.expand()` + object creation | ~0.2 s | 1.1% |
+| `filter_models()` — filter tree walks | ~0.1 s | 0.5% |
+| `peek_eval()` — JAX fitting on subset | ~0.05 s | 0.3% |
+| `full_eval()` — JAX fitting on full data | ~0.5 s | 2.7% |
 
-**Total: 90 tests passing** (41 existing + 49 new)
+**Per parent, ~261 children are produced:**
 
-## Architecture
+| Operator | Children | What it does |
+|---|---|---|
+| `var_xpnd` | ~3,100/iter | Variable substitution — replace variables with complex terms |
+| `add_xpnd` | ~2,400/iter | Addition extension — add terms to Add nodes |
+| `mul_xpnd` | ~4,800/iter | Multiplication extension — multiply by new factors |
+
+**Two-model per child rationale:** The raw form `(C*x0 + C) * (C*x1 + C)` has a `Mul` at the top with two `Add` children. The expanded form `C**2*x0*x1 + C**2*x0 + C**2*x1 + C**2` has an `Add` at the top with four `Mul` children. Different tree structures → different grow operator matches → different children. Growing from both doubles the exploration surface.
+
+**Interaction with coefficient expansion:** Fixing the bare `C` bug requires calling `rewrite_coeff()` in `grow()`. Currently this builds `jax_model` eagerly, triggering JAX compilation for every child (~52,000 compilations per 10-iteration run). The deferred JAX compilation proposed here makes the bare `C` fix viable. These two upgrades should be coordinated — the deferred compilation work benefits both.
+
+---
+
+## Current Architecture
 
 1. `Grower.first_exprs()` — seed expressions from grammar
 2. `filter_models()` — reject invalid expressions
 3. `Memoizer` — skip already-seen expressions
 4. `manip_model()` — symbolic expand/factor/simplify
 5. `filter_models()` + `Memoizer` — dedup algebraic variants
-6. `PGE._eval_models()` — peek evaluation on `peek_npts` subset
+6. `PGE._eval_models()` — peek evaluation on subset (when `peek_fraction > 0`)
 7. `PGE._peek_pop()` — NSGA-II selection to keep promising candidates
 8. `PGE._eval_models()` — full evaluation on all training data
 9. `PGE._final_push()` — accumulate into final Pareto front
@@ -67,27 +156,13 @@ Added `SearchModel.fmt(v, n)` — a single helper for all numeric formatting. Us
 ### Key Design Decisions
 
 1. **No DEAP dependency** — fitness values stored as tuples on model objects (`fitness_values`, `wvalues`)
-2. **No multiprocessing** — JAX/XLA handles parallelism; skipped for now
+2. **No multiprocessing** — JAX/XLA handles parallelism
 3. **No remote evaluation** — all computation is local via JAX
 4. **No lmfit/sklearn** — replaced by JAX-native LM optimizer + JAX metrics
 5. **Two model classes**: `JAXModel` (pure JAX evaluation) + `SearchModel` (search loop state)
 6. **`sortLogNondominated`** expects `wvalues` as plain tuples (not objects)
 
-## Remaining Work
-
-### Low Priority
-
-- **Progress logging** — tqdm progress bars in the search loop
-- **Deduplication during search** — `Memoizer` uses `sympy.Expr.__hash__()` which breaks when coefficient symbols differ across expanders (e.g. `C_0` vs `C_4`); needs structural equality check
-- **Full 3-term discovery** — the target formula `3.0*x0 + 1.5*x1**2 - 0.5*sin(x0)` (R² ≈ 1.0) has not appeared yet; may need higher `pop_count` or `peek_count`
-
-### Not Ported (Out of Scope)
-
-- `parallel.py` — multiprocessing workers (JAX/XLA handles this)
-- `remote evaluation` — WebSocket-based remote workers
-- `timer.py` — timing utilities (can use `time` module directly)
-- `base.py` / `creator.py` — DEAP foundations (no longer needed)
-- `benchmark problems` — Koza, Lipson, Nguyen benchmarks (can add later)
+---
 
 ## Quick Start
 
@@ -106,7 +181,7 @@ pge = PGE(
     usable_funcs=["sin", "cos", "exp", "log"],
     max_iter=10,
     pop_count=3,
-    peek_npts=16,
+    peek_fraction=0.16,  # 16% of training data
 )
 pge.fit(X, Y)
 
@@ -115,6 +190,8 @@ paretos = pge.get_final_paretos()
 best = pge.get_best_model()
 print(best.pretty_expr())
 ```
+
+---
 
 ## Test Commands
 
