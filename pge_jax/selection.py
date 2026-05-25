@@ -102,8 +102,8 @@ def sortNondominated(
 
     current_front = []
     next_front = []
-    dominating_fits = defaultdict(int)
-    dominated_fits = defaultdict(list)
+    dominating_fits: dict[Any, int] = defaultdict(int)
+    dominated_fits: dict[Any, list[Any]] = defaultdict(list)
 
     for i, fit_i in enumerate(fits):
         for fit_j in fits[i + 1 :]:
@@ -116,7 +116,7 @@ def sortNondominated(
         if dominating_fits[fit_i] == 0:
             current_front.append(fit_i)
 
-    fronts = [[]]
+    fronts: list[list[Any]] = [[]]
     for fit in current_front:
         fronts[-1].extend(map_fit_ind[fit])
     pareto_sorted = len(fronts[-1])
@@ -293,15 +293,15 @@ def sortLogNondominated(
     sortNDHelperA(fitnesses, obj, front)
 
     nbfronts = max(front.values()) + 1
-    pareto_fronts = [[] for _ in range(nbfronts)]
+    pareto_fronts: list[list[Any]] = [[] for _ in range(nbfronts)]
     for fit in fitnesses:
         index = front[fit]
         pareto_fronts[index].extend(unique_fits[fit])
 
     if not first_front_only:
         count = 0
-        for i, front in enumerate(pareto_fronts):
-            count += len(front)
+        for i, front_list in enumerate(pareto_fronts):
+            count += len(front_list)
             if count >= k:
                 return pareto_fronts[: i + 1]
         return pareto_fronts
@@ -427,11 +427,12 @@ def splitB(best: List, worst: List, obj: int) -> Tuple[List, List, List, List]:
 
 def sweepB(best: List, worst: List, front: dict) -> None:
     """Adjust rank of worst fitnesses based on best on first 2 objectives."""
-    stairs, fstairs = [], []
+    stairs: list[float] = []
+    fstairs: list[Any] = []
     iter_best = iter(best)
-    next_best = next(iter_best, False)
+    next_best: Any = next(iter_best, None)
     for h in worst:
-        while next_best and h[:2] <= next_best[:2]:
+        while next_best is not None and h[:2] <= next_best[:2]:
             insert = True
             for i, fstair in enumerate(fstairs):
                 if front[fstair] == front[next_best]:
@@ -444,7 +445,7 @@ def sweepB(best: List, worst: List, front: dict) -> None:
                 idx = bisect.bisect_right(stairs, -next_best[1])
                 stairs.insert(idx, -next_best[1])
                 fstairs.insert(idx, next_best)
-            next_best = next(iter_best, False)
+            next_best = next(iter_best, None)
 
         idx = bisect.bisect_right(stairs, -h[1])
         if 0 < idx <= len(stairs):
@@ -475,9 +476,9 @@ def selSPEA2(individuals: List[Any], k: int) -> List[Any]:
     N = len(individuals)
     L = len(individuals[0].values)
     K = math.sqrt(N)
-    strength_fits = [0] * N
-    fits = [0] * N
-    dominating_inds = [list() for _ in range(N)]
+    strength_fits: list[float] = [0.0] * N
+    fits: list[float] = [0.0] * N
+    dominating_inds: list[list[int]] = [list() for _ in range(N)]
 
     for i, ind_i in enumerate(individuals):
         for j, ind_j in enumerate(individuals[i + 1 :], i + 1):
@@ -496,11 +497,11 @@ def selSPEA2(individuals: List[Any], k: int) -> List[Any]:
 
     if len(chosen_indices) < k:
         for i in range(N):
-            distances = [0.0] * N
+            dists = [0.0] * N
             for j in range(i + 1, N):
                 dist = sum((individuals[i].values[l] - individuals[j].values[l]) ** 2 for l in range(L))
-                distances[j] = dist
-            kth_dist = _randomizedSelect(distances, 0, N - 1, K)
+                dists[j] = dist
+            kth_dist = _randomizedSelect(dists, 0, N - 1, K)
             density = 1.0 / (kth_dist + 2.0)
             fits[i] += density
 
@@ -510,8 +511,8 @@ def selSPEA2(individuals: List[Any], k: int) -> List[Any]:
 
     elif len(chosen_indices) > k:
         N_chosen = len(chosen_indices)
-        distances = [[0.0] * N_chosen for _ in range(N_chosen)]
-        sorted_indices = [[0] * N_chosen for _ in range(N_chosen)]
+        distances: list[list[float]] = [[0.0] * N_chosen for _ in range(N_chosen)]
+        sorted_indices: list[list[int]] = [[0] * N_chosen for _ in range(N_chosen)]
         for i in range(N_chosen):
             for j in range(i + 1, N_chosen):
                 dist = sum(

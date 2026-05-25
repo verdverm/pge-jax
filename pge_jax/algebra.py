@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Tuple
 
-import sympy
+import sympy  # type: ignore[import-untyped]
 
 from pge_jax.search_model import SearchModel
 

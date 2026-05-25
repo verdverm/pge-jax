@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import jax.numpy as jnp
 import numpy as np
-import sympy
+import sympy  # type: ignore[import-untyped]
 
 from pge_jax.algebra import manip_model
 from pge_jax.evaluate import evaluate, fit_model
@@ -173,10 +173,10 @@ class PGE:
         self.multi_expanders: List[Dict] = []
 
         # Data
-        self.X_train = None
-        self.Y_train = None
-        self.X_peek = None
-        self.Y_peek = None
+        self.X_train: np.ndarray | None = None
+        self.Y_train: np.ndarray | None = None
+        self.X_peek: np.ndarray | None = None
+        self.Y_peek: np.ndarray | None = None
         self.eval_npts: int = 0
 
         # Search state
@@ -235,16 +235,21 @@ class PGE:
         """Set training and peek data."""
         self.X_train = np.asarray(X_train, dtype=np.float64)
         self.Y_train = np.asarray(Y_train, dtype=np.float64)
+        assert self.Y_train is not None
         self.eval_npts = len(self.Y_train)
 
         # Sample peek data
         if self.peek_fraction > 0 and self.peek_fraction < 1:
             self.peek_npts = max(1, int(self.peek_fraction * self.eval_npts))
             pos = np.random.choice(self.eval_npts, self.peek_npts, replace=False)
+            assert self.X_train is not None
+            assert self.Y_train is not None
             self.X_peek = self.X_train[pos, :]
             self.Y_peek = self.Y_train[pos]
         else:
             self.peek_npts = self.eval_npts
+            assert self.X_train is not None
+            assert self.Y_train is not None
             self.X_peek = self.X_train
             self.Y_peek = self.Y_train
 
@@ -325,8 +330,8 @@ class PGE:
             t0 = time.time()
 
             # Multi-expand and grow
-            expanded = []
-            prev = []
+            expanded: List[SearchModel] = []
+            prev: List[SearchModel] = []
             for i, expander in enumerate(self.multi_expanders):
                 nsga2_list = expander["nsga2_list"]
                 pop_count = expander["pop_count"]
@@ -431,7 +436,7 @@ class PGE:
                     continue
 
                 # Store fitted coefficients
-                modl.jax_model.c_values = fit_result.coefficients
+                modl.jax_model.c_values = np.asarray(fit_result.coefficients)
 
                 # Evaluate on full data for score
                 if self.X_train is None or self.Y_train is None:
@@ -733,7 +738,7 @@ class PGE:
                             m.redchi,
                         )
                     )
-                    exprs.append(m.pretty)
+                    exprs.append(m.pretty or "")
                 if len(rows) >= n_solutions:
                     break
 

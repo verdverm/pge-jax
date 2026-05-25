@@ -11,7 +11,7 @@ from itertools import combinations as combos_woutR
 from itertools import combinations_with_replacement as combos_withR
 from typing import List, Optional
 
-import sympy
+import sympy  # type: ignore[import-untyped]
 
 from pge_jax.search_model import SearchModel
 

@@ -5,7 +5,7 @@ from typing import Sequence
 import jax
 import jax.numpy as jnp
 import numpy as np
-import sympy
+import sympy  # type: ignore[import-untyped]
 
 
 def _extract_coeffs_and_vars(
@@ -116,7 +116,7 @@ class JAXModel:
             val = float(self.expr)
             const_val = jnp.array(val)
 
-            def jax_fun(coefs: jnp.ndarray, *inputs: jnp.ndarray) -> jnp.ndarray:
+            def _constant_jax_fun(coefs: jnp.ndarray, *inputs: jnp.ndarray) -> jnp.ndarray:
                 shape = inputs[0].shape if inputs else ()
                 return jnp.broadcast_to(const_val, shape)
 
@@ -124,7 +124,7 @@ class JAXModel:
                 shape = inputs[0].shape if inputs else (1,)
                 return jnp.zeros((len(shape) if isinstance(shape, tuple) else 1, 0))
 
-            self.jax_fun = jax_fun
+            self.jax_fun = _constant_jax_fun
             self.jac_fun = jac_fun
             return
 
@@ -137,7 +137,7 @@ class JAXModel:
         # Wrap so the first arg is the coefficient array, the rest are
         # input-variable arrays.  This matches the signature expected
         # by the optimiser and Jacobian builder.
-        def jax_fun(coefs: jnp.ndarray, *inputs: jnp.ndarray) -> jnp.ndarray:
+        def _jax_fun(coefs: jnp.ndarray, *inputs: jnp.ndarray) -> jnp.ndarray:
             args: list[jnp.ndarray] = []
             if self.n_coeffs > 0:
                 # Each coefficient symbol needs its own argument
@@ -146,6 +146,7 @@ class JAXModel:
             args.extend(inputs)
             result = raw_fun(*args)
             result = jnp.asarray(result, dtype=jnp.float64)
+            assert isinstance(result, jnp.ndarray)
             # Ensure output shape matches input data shape
             if result.ndim == 0:
                 if inputs:
@@ -159,7 +160,7 @@ class JAXModel:
             def _pred_single(coefs: jnp.ndarray, x0: jnp.ndarray) -> jnp.ndarray:
                 if self.n_vars == 0:
                     return jnp.zeros_like(x0)
-                return jax_fun(coefs, x0)
+                return _jax_fun(coefs, x0)
 
             jac_raw = jax.jacfwd(_pred_single, argnums=0)
 
@@ -169,7 +170,9 @@ class JAXModel:
                     return jnp.zeros((n, self.n_coeffs))
                 # vmap over data points
                 jac_sampled = jax.vmap(jac_raw, in_axes=(None, 0))
-                return jac_sampled(coefs, inputs[0])
+                result = jac_sampled(coefs, inputs[0])
+                assert isinstance(result, jnp.ndarray)
+                return result
 
             self.jac_fun = jac_fun
         else:
@@ -181,7 +184,7 @@ class JAXModel:
                     n = 1
                 return jnp.zeros((n, 0))
 
-        self.jax_fun = jax_fun
+        self.jax_fun = _jax_fun
         self.jac_fun = jac_fun
 
     # ------------------------------------------------------------------

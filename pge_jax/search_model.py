@@ -15,7 +15,7 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, Optional, Tuple
 
-import sympy
+import sympy  # type: ignore[import-untyped]
 
 if TYPE_CHECKING:
     from pge_jax.model import JAXModel
@@ -244,7 +244,7 @@ class SearchModel:
             f"{self.jpsz:3d}",
         ]
         float_strs = [f"{f:>{w}}" for f, w in zip(formatted, widths)]
-        return "  ".join(int_strs) + "    " + "  ".join(float_strs) + "  |  " + self.pretty
+        return "  ".join(int_strs) + "    " + "  ".join(float_strs) + "  |  " + (self.pretty or "")
 
     def pretty_expr(self, n: int = 2) -> str:
         """Substitute fitted coefficient values into the expression."""
@@ -351,7 +351,7 @@ class SearchModel:
                     ii += 1
                 else:
                     args.append(e)
-            args = tuple(args)
+            args = list(args)
             ret = expr.func(*args)
         return ret, ii
 

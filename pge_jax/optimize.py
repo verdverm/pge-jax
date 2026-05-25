@@ -21,7 +21,7 @@ class FitResult:
 
 
 def _residual(model_predict, coefs: jnp.ndarray, y_true: jnp.ndarray) -> jnp.ndarray:
-    return model_predict(coefs) - y_true
+    return jnp.asarray(model_predict(coefs)) - y_true
 
 
 def fit_levenberg_marquardt(
@@ -109,7 +109,9 @@ def fit_levenberg_marquardt(
     success = False
     nfev = 1
 
-    def _step(c: jnp.ndarray, mu_val: float) -> tuple[jnp.ndarray, float, bool, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    def _step(
+        c: jnp.ndarray, mu_val: jnp.ndarray
+    ) -> tuple[jnp.ndarray, jnp.ndarray, bool, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         J = jac(c) if callable(jac) else jac  # type: ignore
         r = _residual(model_predict, c, y_true)
         r_cost = jnp.sum(r**2)
@@ -142,7 +144,7 @@ def fit_levenberg_marquardt(
             c = new_c
             cost = new_r_cost
             if improvement > damping_decrease_thresh:
-                mu_val = max(mu_val / damping_factor, 1e-15)
+                mu_val = jnp.maximum(mu_val / damping_factor, 1e-15)
             if jnp.abs(prev_cost - cost) < tol * jnp.abs(prev_cost + 1e-30):
                 success = True
                 message = f"Converged at iteration {i + 1}"
@@ -222,6 +224,6 @@ def fit_least_squares(
         cost=float(result.fun),
         n_residuals=len(y_true),
         n_params=int(len(x0)),
-        message=str(result.message) if hasattr(result, "message") else "",
-        nfev=result.nit if hasattr(result, "nit") else 0,
+        message=getattr(result, "message", ""),
+        nfev=int(result.nit) if hasattr(result, "nit") else 0,
     )
