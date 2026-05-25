@@ -129,6 +129,9 @@ class PGE:
         random.seed(random_seed)
         np.random.seed(random_seed)
 
+        # Timing
+        self._phase_times: Dict[str, float] = {}
+
         # Config
         self.max_iter: int = max_iter
         self.pop_count: int = pop_count
@@ -210,9 +213,17 @@ class PGE:
             ``self`` for chaining.
         """
         self.start_time = time.time()
+        self._phase_times = {}
+        t0 = time.time()
         self._set_data(X_train, Y_train)
+        self._phase_times["data_setup"] = time.time() - t0
+        t0 = time.time()
         self._preloop()
+        self._phase_times["preloop"] = time.time() - t0
+        t0 = time.time()
         self._loop(self.max_iter)
+        self._phase_times["search_loop"] = time.time() - t0
+        self._phase_times.update(self._loop_phase_times)
         self.finalize()
         return self
 
@@ -306,8 +317,12 @@ class PGE:
 
     def _loop(self, iterations: int) -> None:
         """Run the main search loop for *iterations* iterations."""
+        self._loop_phase_times: Dict[str, float] = {}
+
         for I in range(iterations):
             self.curr_iter = I
+
+            t0 = time.time()
 
             # Multi-expand and grow
             expanded = []
@@ -329,13 +344,21 @@ class PGE:
                     children = grower.grow(p)
                     expanded.extend(children)
 
+            self._loop_phase_times["grow"] = self._loop_phase_times.get("grow", 0) + time.time() - t0
+
             if not expanded:
                 continue
+
+            t0 = time.time()
 
             self._assign_iter_id(expanded)
 
             # Filter
             to_memo = filter_models(expanded, self._get_default_filters())
+
+            self._loop_phase_times["filter"] = self._loop_phase_times.get("filter", 0) + time.time() - t0
+
+            t0 = time.time()
 
             # Algebra
             to_alge = []
@@ -345,6 +368,10 @@ class PGE:
                 self._assign_iter_id(algebrad)
                 to_memo = filter_models(algebrad, self._get_default_filters())
                 to_memo = self._memoize_models(to_memo)
+
+            self._loop_phase_times["algebra"] = self._loop_phase_times.get("algebra", 0) + time.time() - t0
+
+            t0 = time.time()
 
             to_peek = self._memoize_models(to_memo)
             to_peek = to_alge + to_peek
@@ -357,11 +384,17 @@ class PGE:
                 self._peek_push_models(to_peek)
                 to_eval = self._peek_pop()
 
+            self._loop_phase_times["peek_eval"] = self._loop_phase_times.get("peek_eval", 0) + time.time() - t0
+
+            t0 = time.time()
+
             # Full evaluate
             if to_eval:
                 self._eval_models(to_eval)
                 self._final_push(to_eval)
                 self.multi_expanders[0]["nsga2_list"].extend(to_eval)
+
+            self._loop_phase_times["full_eval"] = self._loop_phase_times.get("full_eval", 0) + time.time() - t0
 
             self.curr_time = time.time()
 
@@ -756,7 +789,24 @@ class PGE:
         print(f"  eval_npts:       {self.eval_npts}")
 
         runtime = time.time() - self.start_time
-        print(f"TOTAL RUN TIME: {runtime:.4f} seconds")
+        loop_sub = {
+            k: v for k, v in self._phase_times.items() if k in ("grow", "filter", "algebra", "peek_eval", "full_eval")
+        }
+        if loop_sub:
+            self._phase_times["search_loop"] = sum(loop_sub.values())
+            for k in loop_sub:
+                del self._phase_times[k]
+        self._phase_times["finalize"] = runtime - sum(self._phase_times.values())
+        print(f"\nTOTAL RUN TIME: {runtime:.4f} seconds")
+        print("\nPhase Times:")
+        for phase, dur in self._phase_times.items():
+            pct = dur / runtime * 100 if runtime > 0 else 0
+            print(f"  {phase:20s} {dur:8.3f}s  ({pct:5.1f}%)")
+        if loop_sub:
+            print("\n  Search Loop Breakdown:")
+            for phase, dur in loop_sub.items():
+                pct = dur / self._phase_times["search_loop"] * 100 if self._phase_times["search_loop"] > 0 else 0
+                print(f"    {phase:20s} {dur:8.3f}s  ({pct:5.1f}% of search_loop)")
 
     def get_final_paretos(self) -> Optional[List[List[SearchModel]]]:
         """Return the final Pareto fronts.
