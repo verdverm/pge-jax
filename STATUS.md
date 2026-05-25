@@ -26,7 +26,7 @@ Replace `peek_npts: int = 16` with `peek_fraction: float = 0.0` in the PGE const
 - `_set_data()` computes `self.peek_npts = max(1, int(peek_fraction * eval_npts))` and stores it for `finalize()` prints
 - `_preloop()` and `_loop()` check `peek_fraction` instead of `peek_npts`
 - `finalize()` prints preserved via stored `self.peek_npts`
-- Tests updated: `test_pge_single_var` → `peek_fraction=0.16`, `test_pge_multi_var` → `peek_fraction=0.125`
+- Tests updated: `test_pge_multi_var` → `peek_fraction=0.125`
 - New tests: `test_peek_default_off`, `test_peek_fraction_opt_in`
 
 ### Todos
