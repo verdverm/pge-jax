@@ -111,7 +111,7 @@ class PGE:
     def __init__(
         self,
         usable_vars=None,
-        usable_funcs: List[str] = DEFAULT_FITNESS_PARAMS,
+        usable_funcs: List[str] | None = None,
         max_iter: int = 100,
         pop_count: int = 3,
         peek_count: int = 6,
@@ -164,9 +164,7 @@ class PGE:
         self.multi_expander_params = multi_expander_params or [
             {
                 "pop_count": pop_count,
-                "usable_funcs": usable_funcs
-                if usable_funcs != DEFAULT_FITNESS_PARAMS
-                else ["sin", "cos", "exp", "log"],
+                "usable_funcs": usable_funcs or ["sin", "cos", "exp", "log"],
                 "grow_params": grow_params or {},
             }
         ]
