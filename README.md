@@ -33,7 +33,7 @@ pge = PGE(
     usable_funcs=["sin", "cos", "exp", "log"],
     max_iter=10,
     pop_count=3,
-    peek_npts=16,       # subset size for fast partial evaluation
+    peek_fraction=0.25,   # 25% of data for fast partial evaluation
 )
 pge.fit(X, Y)
 

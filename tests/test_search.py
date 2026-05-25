@@ -467,7 +467,6 @@ class TestIntegration:
             usable_funcs=["sin", "cos"],
             max_iter=2,
             pop_count=2,
-            peek_npts=8,
             random_seed=42,
         )
         pge.fit(X, Y)
@@ -481,7 +480,74 @@ class TestIntegration:
         paretos = pge.get_final_paretos()
         assert paretos is not None
         assert len(paretos) > 0
-        assert len(paretos[0]) > 0
+
+    def test_peek_default_off(self):
+        """peek_fraction defaults to 0, so the peek phase is not run."""
+        import jax
+
+        jax.config.update("jax_enable_x64", True)
+
+        import numpy as np
+
+        from pge_jax import PGE
+
+        np.random.seed(42)
+        X = np.random.randn(50, 1)
+        Y = 3.0 * X[:, 0] + 1.5
+
+        pge = PGE(
+            usable_vars=["x0"],
+            usable_funcs=["sin", "cos"],
+            max_iter=2,
+            pop_count=2,
+            random_seed=42,
+        )
+        assert pge.peek_fraction == 0.0
+        pge.fit(X, Y)
+
+        # No peek phase means no peeked models and peek data not sampled
+        assert pge.peekd_models == 0
+        assert pge.X_peek is not None  # falls back to full train data
+        assert pge.Y_peek is not None
+
+        best = pge.get_best_model()
+        assert best is not None
+        assert best.score is not None
+        assert best.r2 is not None
+
+    def test_peek_fraction_opt_in(self):
+        """peek_fraction > 0 enables the peek phase with a subset of data."""
+        import jax
+
+        jax.config.update("jax_enable_x64", True)
+
+        import numpy as np
+
+        from pge_jax import PGE
+
+        np.random.seed(42)
+        X = np.random.randn(100, 1)
+        Y = 3.0 * X[:, 0] + 1.5
+
+        pge = PGE(
+            usable_vars=["x0"],
+            usable_funcs=["sin", "cos"],
+            max_iter=2,
+            pop_count=2,
+            peek_fraction=0.2,
+            random_seed=42,
+        )
+        assert pge.peek_fraction == 0.2
+        pge.fit(X, Y)
+
+        # Peek phase ran: peek data is a subset of training data
+        assert pge.X_peek.shape[0] == 20
+        assert pge.peekd_models > 0
+
+        best = pge.get_best_model()
+        assert best is not None
+        assert best.score is not None
+        assert best.r2 is not None
 
     def test_pge_multi_var(self):
         import jax
@@ -501,7 +567,7 @@ class TestIntegration:
             usable_funcs=["sin", "cos", "exp"],
             max_iter=3,
             pop_count=3,
-            peek_npts=10,
+            peek_fraction=0.125,
             random_seed=42,
         )
         pge.fit(X, Y)

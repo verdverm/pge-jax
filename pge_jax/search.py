@@ -77,8 +77,9 @@ class PGE:
         iteration.
     peek_count:
         Number of models to pop from the peek heap for full evaluation.
-    peek_npts:
-        Number of data points for peek evaluation (0 = skip peek).
+    peek_fraction:
+        Fraction of training data to use for peek evaluation (0 = skip peek,
+        values between 0 and 1 exclusive).
     min_size:
         Minimum tree size.
     max_size:
@@ -114,7 +115,7 @@ class PGE:
         max_iter: int = 100,
         pop_count: int = 3,
         peek_count: int = 6,
-        peek_npts: int = 16,
+        peek_fraction: float = 0.0,
         min_size: int = 1,
         max_size: int = 64,
         max_power: int = 5,
@@ -132,7 +133,7 @@ class PGE:
         self.max_iter: int = max_iter
         self.pop_count: int = pop_count
         self.peek_count: int = peek_count
-        self.peek_npts: int = peek_npts
+        self.peek_fraction: float = peek_fraction
         self.min_size: int = min_size
         self.max_size: int = max_size
         self.max_power: int = max_power
@@ -226,11 +227,13 @@ class PGE:
         self.eval_npts = len(self.Y_train)
 
         # Sample peek data
-        if self.peek_npts > 0 and self.peek_npts < self.eval_npts:
+        if self.peek_fraction > 0 and self.peek_fraction < 1:
+            self.peek_npts = max(1, int(self.peek_fraction * self.eval_npts))
             pos = np.random.choice(self.eval_npts, self.peek_npts, replace=False)
             self.X_peek = self.X_train[pos, :]
             self.Y_peek = self.Y_train[pos]
         else:
+            self.peek_npts = self.eval_npts
             self.X_peek = self.X_train
             self.Y_peek = self.Y_train
 
@@ -280,7 +283,7 @@ class PGE:
         to_peek = to_alge + to_peek
 
         # Evaluate
-        if self.peek_npts == 0:
+        if self.peek_fraction == 0:
             to_eval = to_peek
         else:
             self._eval_models(to_peek, peek=True)
@@ -291,7 +294,9 @@ class PGE:
 
         # Push to final and population
         self._final_push(to_eval)
-        self.multi_expanders[0]["nsga2_list"].extend(to_eval)
+        self.multi_expanders[0]["nsga2_list"].extend(
+            m for m in to_eval if m is not None and not m.errored and m.score is not None
+        )
 
         self.curr_time = time.time()
 
@@ -345,7 +350,7 @@ class PGE:
             to_peek = to_alge + to_peek
 
             # Peek evaluate
-            if self.peek_npts == 0:
+            if self.peek_fraction == 0:
                 to_eval = to_peek
             else:
                 self._eval_models(to_peek, peek=True)
@@ -746,6 +751,9 @@ class PGE:
         print(f"num peek evals:    {self.peek_nfev} ({self.peek_nfev * self.peek_npts} point-evals)")
         print(f"num eval evals:    {self.eval_nfev} ({self.eval_nfev * self.eval_npts} point-evals)")
         print(f"num total evals:   {self.peek_nfev * self.peek_npts + self.eval_nfev * self.eval_npts}")
+
+        print(f"  peek_npts:       {self.peek_npts}")
+        print(f"  eval_npts:       {self.eval_npts}")
 
         runtime = time.time() - self.start_time
         print(f"TOTAL RUN TIME: {runtime:.4f} seconds")
