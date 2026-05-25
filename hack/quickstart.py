@@ -17,8 +17,7 @@ pge = PGE(
     max_iter=5,
     pop_count=10,
     max_size=32,
-    peek_count=20,
-    peek_npts=16,  # subset size for fast partial evaluation
+    peek_fraction=0.16,
 )
 pge.fit(X, Y)
 
