@@ -2,13 +2,16 @@
 
 ## Overview
 
-Prioritized Grammar Enumeration (PGE) for symbolic regression, implemented in JAX. The core search loop is complete with 92 passing tests. Three major upgrades are planned:
+Prioritized Grammar Enumeration (PGE) for symbolic regression, implemented in JAX. The core search loop is complete with 92 passing tests.
 
-| Upgrade | Scope | Impact |
-|---|---|---|
-| **Peek refactor** | Search loop parameter interface | Behavioral shift: peek off by default, fraction-based |
-| **Coefficient expansion** | Coefficient system + expression generation | New coefficient kinds (named, physical), expression-level dedup |
-| **Grow phase optimization** | Expression enumeration performance | Two-model per child architecture |
+**Priority order:** (1) Grow phase optimization → (2) Coefficient expansion (LAST).
+
+| Upgrade | Priority | Scope | Impact | Status |
+|---|---|---|---|---|
+| **Grow phase optimization** | 1 | Expression enumeration performance | 2–5× faster grow, bare C bug fix, lazy JAX | Not started |
+| **Coefficient expansion** | 3 (last) | Coefficient system + expression generation | New coefficient kinds (named, physical), expression-level dedup | Not started |
+
+Peek refactor is complete and not listed above.
 
 ---
 
@@ -29,10 +32,6 @@ Replace `peek_npts: int = 16` with `peek_fraction: float = 0.0` in the PGE const
 - Tests updated: `test_pge_multi_var` → `peek_fraction=0.125`
 - New tests: `test_peek_default_off`, `test_peek_fraction_opt_in`
 
-### Todos
-
-None. All done.
-
 ### Important Context
 
 - `peek_fraction >= 1` or `<= 0` → skip peek (same as old `peek_npts == 0`)
@@ -42,7 +41,129 @@ None. All done.
 
 ---
 
-## Coefficient Expansion
+## 1. Grow Phase Optimization
+
+### Brief
+
+The grow phase dominates search time. Three architectural issues:
+
+1. `sympy.expand()` is called eagerly in `SearchModel.__init__` for every child, but `SearchModel` is a generic wrapper that shouldn't care about expression normalization
+2. Raw and expanded forms are structurally different trees that produce different children when `grow()` is applied — currently only the expanded form exists (hidden in `__init__`)
+3. Children always fail `filter_no_C` because `cs` is never populated, wasting all downstream filter work
+
+### Current State
+
+Nothing implemented. The following code paths are confirmed slow/broken:
+
+- `search_model.py:133` — `self.expr = sympy.expand(expr)` runs eagerly in every `SearchModel.__init__`
+- `expand.py:337-341` — `grow()` creates `SearchModel(e, p_id=M.id, reln="...")` with no `cs` arg, so `self.cs = []`
+- `expand.py:149-152` — term pools use bare `C = sympy.Symbol("C")`
+- `model.py:26` — `_extract_coeffs_and_vars()` only recognizes `C_` and `C[` prefixes, so bare `C` ends up in `vars_` not `cs_`
+- `search_model.py:338` — `rewrite_coeff()` calls `_JAXModel()` immediately, triggering JAX compilation for every child
+
+### Phase 1: Lazy `expr` in `SearchModel`
+
+**Files:** `search_model.py`
+
+- Store raw expression in `__init__`: `self._raw_expr = expr`, set `self.expr = None`
+- Convert `expr` to a property: compute `sympy.expand(self._raw_expr)` on first access
+- `orig` stays as the unexpanded input
+- `size()`, `calc_tree_size()`, `calc_jac_size()` all access `self.expr` — property is fine, first access triggers expand, subsequent accesses are cached
+- `pretty_expr()` also accesses `self.expr` — no change needed
+- `SearchModel.__hash__` uses `self.id`, not expression — no change needed
+
+**Verification:** All existing code accesses `self.expr` which is already computed eagerly. After this change, first access defers to lazy computation. No behavioral change.
+
+### Phase 2: Defer JAX compilation
+
+**Files:** `search_model.py`, `model.py`
+
+- Split `rewrite_coeff()` into two steps:
+  1. `_rewrite_coeff_only(expr)` — symbol rewriting only, returns `(rewritten_expr, cs_list)`. No JAX, no side effects.
+  2. `build_jax_model(expr, cs, xs)` — new method on `SearchModel` that creates `JAXModel(expr, cs=cs, xs=xs)`
+- `rewrite_coeff()` (existing) calls both steps (keeps current behavior for `first_exprs()` and `manip_model()`)
+- `grow()` calls only `_rewrite_coeff_only()` to get `cs` list, passes it to `SearchModel` constructor
+- `SearchModel.__init__` accepts optional `cs` and stores it, sets `self.jax_model = None`
+- `build_jax_model()` is called lazily in `_eval_models()` when a model is selected for evaluation
+
+**Why this matters:** `rewrite_coeff()` currently builds `JAXModel` which calls `_build_jax_functions()` → `sympy.lambdify()` → XLA compilation. This happens eagerly for every child in `first_exprs()` and `grow()`. Deferring compilation means only models that survive filtering and memoization get compiled.
+
+### Phase 3: Fix bare C — populate `cs` in `grow()`
+
+**Files:** `expand.py`, `search_model.py`
+
+- `grow()` calls `_rewrite_coeff_only()` on each generated expression to get `(rewritten_expr, cs_list)`
+- Pass `cs=cs_list` to `SearchModel` constructor
+- Children now have `cs = [C_0, C_1, ...]` instead of `cs = []`
+- `filter_no_C` now passes for children (they have coefficients)
+- `jax_model` stays `None` until Phase 4 calls `build_jax_model()`
+
+**Bare C bug fix:** Previously, children had bare `C` in their expressions and `cs = []`. When `jax_model` was eventually built, `_extract_coeffs_and_vars()` put bare `C` into `vars_` because it only recognizes `C_` and `C[` prefixes. Now `rewrite_coeff()` replaces bare `C` with `C_0, C_1, ...` before the expression leaves `grow()`.
+
+### Phase 4: Two `SearchModel` per child (raw + expanded)
+
+**Files:** `expand.py`
+
+- After rewriting in `grow()`, create two `SearchModel` instances per child:
+  - Model A: `SearchModel(raw_expr, cs=cs, xs=xs)` — raw form, `expr` property will expand on first access
+  - Model B: `SearchModel(expanded_expr, cs=cs, xs=xs)` — expanded form, `expr` property returns cached expanded
+- Both have the same `cs` and `xs` (rewriting is the same for both)
+- Both have `jax_model = None` (deferred to Phase 5)
+- Returns ~2× children but explores different operator match surfaces
+
+**Rationale:** The raw form `(C*x0 + C) * (C*x1 + C)` has a `Mul` at the top with two `Add` children. The expanded form `C**2*x0*x1 + C**2*x0 + C**2*x1 + C**2` has an `Add` at the top with four `Mul` children. Different tree structures → different grow operator matches → different children.
+
+### Phase 5: Build JAX lazily in `_eval_models()`
+
+**Files:** `search.py`
+
+- In `_eval_models()`, before calling `fit_model()`, check if `modl.jax_model is None`
+- If `None`, call `modl.build_jax_model()` to create it
+- This ensures JAX compilation only happens for models that survive filtering + memoization + peek selection
+
+### Phase 6: Move `_uniquify()` after filtering
+
+**Files:** `expand.py`
+
+- Current: `grow()` calls `_uniquify()` on expression lists → creates `SearchModel` for each → returns → filtered in `search.py:360`
+- New: `grow()` returns raw expression lists (no `_uniquify()`, no `SearchModel` creation)
+- Filtering happens on raw expressions in `search.py` (same filter logic, works on sympy Expr)
+- After filtering, call `_uniquify()` on the filtered list before memoization
+- Saves `SearchModel` creation + `__hash__` + `size()` computation for rejected expressions
+
+**Note:** Some filters in `filters.py` access `modl.size()` and `modl.cs`. After this change, filtered models won't have `SearchModel` instances yet. Two options:
+  - Option A: Move `_uniquify()` + `SearchModel` creation to after filtering, but make filters work on raw expressions (remove `modl` parameter, change filters to pure `expr → bool`)
+  - Option B: Keep `SearchModel` creation in `grow()` but skip `_uniquify()` and `size()` computation until after filtering. `size()` is already lazy (computed on first access when `sz == 0`), so this is cheap.
+  - **Recommendation: Option B.** Minimal filter changes needed. `filter_no_C` checks `len(modl.cs)` which is now populated (Phase 3). `filter_too_big` accesses `modl.size()` which is lazy.
+
+### Phase 7: Reduce branching factor
+
+**Files:** `expand.py`
+
+- Add `max_grow_children` config to `Grower.__init__` (default: unlimited, opt-in)
+- Size-based pruning in `grow()`: skip operators that would produce children exceeding `max_size`
+- Pool sizes are already bounded by `subs_level`, `adds_level`, `muls_level` params. Consider reducing defaults for `high` levels.
+
+### Verification
+
+- All 92 existing tests must pass after each phase
+- Add benchmark comparing grow time per iteration before/after (Phase 7)
+- Track: children per parent, filter rejection rate, time per child, JAX compilations per iteration
+
+### TODO
+
+- [ ] Phase 1: Lazy `expr` in `SearchModel`
+- [ ] Phase 2: Defer JAX compilation (split `rewrite_coeff`)
+- [ ] Phase 3: Fix bare C — populate `cs` in `grow()`
+- [ ] Phase 4: Two `SearchModel` per child (raw + expanded)
+- [ ] Phase 5: Build JAX lazily in `_eval_models()`
+- [ ] Phase 6: Move `_uniquify()` after filtering
+- [ ] Phase 7: Reduce branching factor
+- [ ] Add benchmarks
+
+---
+
+## 2. Coefficient Expansion (LAST)
 
 ### Brief
 
@@ -65,9 +186,13 @@ Key design decisions from user:
 
 ### Status
 
-**Not started.** Design is complete. No code changes yet.
+**Not started.** Design is complete. No code changes yet. **Must be done AFTER grow phase optimization.**
 
-### Todos
+### Prerequisite
+
+Grow phase optimization must be complete first. The bare C fix (Phase 3) and deferred JAX compilation (Phase 2) are prerequisites for safely integrating coefficient kinds into `grow()`. Without deferred compilation, adding three coefficient kinds would multiply the JAX compilation cost by 3× (or more with cross-kind combos).
+
+### TODO
 
 - [ ] Create `pge_jax/coeff_registry.py` — global `CoefficientRegistry` for N_i and P_i
 - [ ] Create `pge_jax/system_model.py` — `SystemModel` wrapper for multi-equation representation
@@ -83,42 +208,7 @@ Key design decisions from user:
 
 ### Important Context
 
-**Bare C bug** (pre-existing): `grow()` creates child models from bare-`C` term pools without calling `rewrite_coeff()`. Children have `jax_model = None`, `cs = []`, and bare `C` in their expressions. When `jax_model` is eventually built lazily, `_extract_coeffs_and_vars()` puts bare `C` into `vars_` instead of `cs_` because it only recognises `C_` and `C[` prefixes. This is a bug that affects the current single-kind system and will need to be fixed as part of this work.
-
-**Interaction with grow phase optimization** (see below): The coefficient expansion work intersects with the grow phase performance analysis. Specifically, fixing the bare `C` bug requires calling `rewrite_coeff()` in `grow()` before creating children, which currently triggers JAX compilation eagerly. The grow phase optimization proposes deferring JAX compilation, which would make this fix viable without the compilation cost. These two upgrades should be coordinated.
-
----
-
-## Grow Phase Optimization
-
-### Brief
-
-The grow phase dominates search time. Three architectural issues are identified:
-
-1. `sympy.expand()` is called eagerly in `SearchModel.__init__` for every child, but `SearchModel` is a generic wrapper that shouldn't care about expression normalization
-2. Raw and expanded forms are structurally different trees that produce different children when `grow()` is applied — currently only the expanded form exists (hidden in `__init__`)
-3. Children always fail `filter_no_C` because `cs` is never populated, wasting all downstream filter work
-
-### Status
-
-**Not started.** Performance analysis is documented. No code changes yet.
-
-### Todos
-
-- [ ] Move `sympy.expand()` from `SearchModel.__init__` into `grow()` — it's a grow-level operation, not a wrapper concern
-- [ ] Create two `SearchModel` instances per child: one from raw expression, one from expanded form
-- [ ] Make `expr` lazy in `SearchModel` — only compute on first access (for raw models)
-- [ ] Fix `cs` population for children — call `rewrite_coeff()` in `grow()` before creating child models
-- [ ] Defer JAX compilation — separate `rewrite_coeff()` (symbol rewriting) from `build_jax_model()` (JAX compilation)
-- [ ] Move `_uniquify()` after filtering — deduplicating rejected expressions is wasteful
-- [ ] Reduce branching factor in `grow()` — reduce pool sizes or add size-based pruning during growth
-- [ ] Add benchmarks to measure improvement
-
-### Important Context
-
-**Two-model per child rationale:** The raw form `(C*x0 + C) * (C*x1 + C)` has a `Mul` at the top with two `Add` children. The expanded form `C**2*x0*x1 + C**2*x0 + C**2*x1 + C**2` has an `Add` at the top with four `Mul` children. Different tree structures → different grow operator matches → different children. Growing from both doubles the exploration surface.
-
-**Interaction with coefficient expansion:** Fixing the bare `C` bug requires calling `rewrite_coeff()` in `grow()`. Currently this builds `jax_model` eagerly, triggering JAX compilation for every child. The deferred JAX compilation proposed here makes the bare `C` fix viable. These two upgrades should be coordinated — the deferred compilation work benefits both.
+**Bare C bug** (fixed by grow phase optimization, Phase 3): `grow()` creates child models from bare-`C` term pools without calling `rewrite_coeff()`. Children have `jax_model = None`, `cs = []`, and bare `C` in their expressions. When `jax_model` is eventually built lazily, `_extract_coeffs_and_vars()` puts bare `C` into `vars_` instead of `cs_` because it only recognises `C_` and `C[` prefixes. This bug is fixed by Phase 3 of grow phase optimization.
 
 ---
 
