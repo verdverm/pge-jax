@@ -25,6 +25,7 @@ from pge_jax.search_model import (
     IterationProgress,
     IterationStageTimes,
     IterationSubTimes,
+    MemoizeRecord,
     SearchModel,
 )
 from pge_jax.selection import (
@@ -301,6 +302,8 @@ class PGE:
 
     def _preloop(self) -> None:
         """Generate and evaluate the initial population."""
+        preloop_start = time.time()
+
         # Build expanders
         self.multi_expanders = []
         for p in self.multi_expander_params:
@@ -316,42 +319,107 @@ class PGE:
             )
 
         # Generate first expressions
+        t0 = time.time()
         initial_exprs = self.multi_expanders[0]["grower"].first_exprs()
         self._assign_iter_id(initial_exprs)
+        preloop_grow_dur = time.time() - t0
 
         # Process-filter pipeline
-        filtered = filter_models(initial_exprs, self._get_default_filters())
-        unique = self._memoize_models(filtered)
+        t0 = time.time()
+        filter_in = len(initial_exprs)
+        filtered, filter_breakdown = filter_models_with_stats(initial_exprs, self._get_default_filters())
+        filter_out = len(filtered)
+        preloop_filter_dur = time.time() - t0
+
+        # Memoize filtered
+        t0 = time.time()
+        unique, preloop_memo_dups = self._memoize_models(filtered)
+        preloop_memo_dur = time.time() - t0
 
         # Algebra pass
-        algebrad = []
+        t0 = time.time()
+        algebrad: List[SearchModel] = []
+        algebrad_unique: List[SearchModel] = []
+        preloop_method_times: list[dict] = []
         if self.algebra_methods:
-            algebrad = self._algebra_models(unique)
-            self._assign_iter_id(algebrad)
-            algebrad_filtered = filter_models(algebrad, self._get_default_filters())
-            algebrad_unique = self._memoize_models(algebrad_filtered)
-        else:
-            algebrad_unique = []
+            for meth in self.algebra_methods:
+                m0 = time.time()
+                algebrad = self._algebra_models(unique)
+                self._assign_iter_id(algebrad)
+                algebrad_filtered = filter_models(algebrad, self._get_default_filters())
+                algebrad_unique, _ = self._memoize_models(algebrad_filtered)
+                method_dur = time.time() - m0
+                preloop_method_times.append(
+                    {
+                        "method": meth,
+                        "time": method_dur,
+                        "in_count": len(unique),
+                        "out_count": len(algebrad_unique),
+                    }
+                )
+        preloop_algebra_dur = time.time() - t0
 
         # Combine algebra and non-algebra models
         candidates = algebrad_unique + unique
 
         # Peek evaluation
+        preloop_peek_dur = 0.0
         if self.peek_fraction == 0:
             to_eval = candidates
         else:
+            t0 = time.time()
             evaluated = self._eval_models(candidates, peek=True)
             self._peek_push_models(evaluated)
+            preloop_peek_dur = time.time() - t0
             to_eval = self._peek_pop() + self._peek_pop()  # double pop first time
 
         # Full evaluation
+        t0 = time.time()
         evaluated = self._eval_models(to_eval)
+        preloop_full_dur = time.time() - t0
 
         # Push to final and population
         self._final_push(evaluated)
         self.multi_expanders[0]["nsga2_list"].extend(evaluated)
 
         self.curr_time = time.time()
+
+        # Track as iteration 0 for preloop
+        self._loop_stage_times.grow.append(preloop_grow_dur)
+        self._loop_stage_times.filter.append(preloop_filter_dur)
+        self._loop_stage_times.algebra.append(preloop_algebra_dur)
+        self._loop_stage_times.peek_eval.append(preloop_peek_dur)
+        self._loop_stage_times.full_eval.append(preloop_full_dur)
+        self._loop_stage_times.memo_time.append(preloop_memo_dur)
+        self._loop_stage_times.memo_dups.append(preloop_memo_dups)
+        self._loop_sub_times.grow_expander.append([])
+        self._loop_sub_times.grow_operators.append([])
+        self._loop_sub_times.grow_operator_times.append([])
+        self._loop_sub_times.filter_in.append(filter_in)
+        self._loop_sub_times.filter_out.append(filter_out)
+        self._loop_sub_times.filter_breakdown.append(filter_breakdown)
+        self._loop_sub_times.filter_time.append(preloop_filter_dur)
+        self._loop_sub_times.algebra_methods.append(preloop_method_times)
+        self._loop_sub_times.memoize.append(
+            MemoizeRecord(in_count=filter_in, unique=filter_out, duplicates=preloop_memo_dups)
+        )
+
+        # Print preloop line
+        best = f"{self._current_best_score():.6g}" if self._current_best_score() != float("inf") else "N/A"
+        preloop_dur = time.time() - self.start_time - (self._phase_times.get("data_setup", 0))
+        print(
+            f"  preloop  | "
+            f"elapsed {time.time() - self.start_time:7.2f}s | "
+            f"iter {preloop_dur:.3f}s | "
+            f"grown {len(initial_exprs):4d} | "
+            f"filter {filter_in:6d}->{filter_out:6d} | "
+            f"alg {len(algebrad):3d}+{len(algebrad_unique):3d} | "
+            f"memo {preloop_memo_dups:6d} | "
+            f"peek {0:6d} | "
+            f"full {len(evaluated):6d} | "
+            f"best {best} | "
+            f"pop {len(self.multi_expanders[0]['nsga2_list']):4d}"
+        )
 
     # ------------------------------------------------------------------
     # Main loop
@@ -440,14 +508,15 @@ class PGE:
             algebrad: List[SearchModel] = []
             algebrad_unique: List[SearchModel] = []
             method_times: list[dict] = []
+            unique: List[SearchModel] = []
             if self.algebra_methods:
-                unique = self._memoize_models(filtered)
+                unique, _ = self._memoize_models(filtered)
                 for meth in self.algebra_methods:
                     m0 = time.time()
                     algebrad = self._algebra_models(unique)
                     self._assign_iter_id(algebrad)
                     algebrad_filtered = filter_models(algebrad, self._get_default_filters())
-                    algebrad_unique = self._memoize_models(algebrad_filtered)
+                    algebrad_unique, _ = self._memoize_models(algebrad_filtered)
                     method_dur = time.time() - m0
                     method_times.append(
                         {
@@ -466,7 +535,9 @@ class PGE:
             t0 = time.time()
 
             # Memoize non-algebra models
-            unique = self._memoize_models(filtered)
+            unique, iter_memo_dups = self._memoize_models(filtered)
+            memo_dur = time.time() - t0
+            self._loop_phase_times["memo"] = self._loop_phase_times.get("memo", 0) + memo_dur
 
             # Combine algebra and non-algebra models
             candidates = algebrad_unique + unique
@@ -510,6 +581,19 @@ class PGE:
             pop_size = len(self.multi_expanders[0]["nsga2_list"]) if self.multi_expanders else 0
             avg_algebra_size = sum(m.size() for m in algebrad_unique) / len(algebrad_unique) if algebrad_unique else 0.0
 
+            # Count memo duplicates this iteration
+            iter_memo_dups = (
+                sum(
+                    r.duplicates
+                    for r in self._loop_sub_times.memoize[-len(self._loop_sub_times.algebra_methods) - 2 :]
+                    if r.duplicates > 0
+                )
+                if self._loop_sub_times.memoize
+                else 0
+            )
+            self._loop_stage_times.memo_time.append(memo_dur)
+            self._loop_stage_times.memo_dups.append(iter_memo_dups)
+
             progress = IterationProgress(
                 iteration=I,
                 elapsed=elapsed,
@@ -526,6 +610,7 @@ class PGE:
                 avg_grown_size=avg_grown_size,
                 avg_filtered_size=avg_filtered_size,
                 avg_algebra_size=avg_algebra_size,
+                memoized=iter_memo_dups,
             )
             self._iteration_progress.append(progress)
             self._print_iteration_progress(progress)
@@ -585,12 +670,13 @@ class PGE:
             f"elapsed {progress.elapsed:7.2f}s | "
             f"iter {progress.iter_dur:.3f}s | "
             f"grown {progress.grown:4d} | "
-            f"filter {progress.filtered_in}->{progress.filtered_out} | "
-            f"alg {progress.algebrad}+{progress.algebrad_unique} | "
-            f"peek {progress.peek_evaluated} | "
-            f"full {progress.fully_evaluated} | "
+            f"filter {progress.filtered_in:6d}->{progress.filtered_out:6d} | "
+            f"alg {progress.algebrad:3d}+{progress.algebrad_unique:3d} | "
+            f"memo {progress.memoized:6d} | "
+            f"peek {progress.peek_evaluated:6d} | "
+            f"full {progress.fully_evaluated:6d} | "
             f"best {best} | "
-            f"pop {progress.population_size}"
+            f"pop {progress.population_size:4d}"
         )
 
     # ------------------------------------------------------------------
@@ -811,15 +897,21 @@ class PGE:
             filter_has_coeff_pow,
         ]
 
-    def _memoize_models(self, models: List[SearchModel]) -> List[SearchModel]:
+    def _memoize_models(self, models: List[SearchModel]) -> Tuple[List[SearchModel], int]:
         """Deduplicate models and assign IDs.
+
+        Parameters
+        ----------
+        models:
+            Models to deduplicate.
 
         Returns
         -------
-        list[SearchModel]
-            Only newly inserted (unique) models.
+        tuple[list[SearchModel], int]
+            ``(unique_models, rejected_count)``.
         """
         unique = []
+        rejected = 0
         for m in models:
             h = m.orig.__hash__()
             r = self.hmap.get(h, None)
@@ -829,7 +921,12 @@ class PGE:
                 self.hmap[h] = m
                 m.memoized = True
                 unique.append(m)
-        return unique
+            else:
+                rejected += 1
+        self._loop_sub_times.memoize.append(
+            MemoizeRecord(in_count=len(models), unique=len(unique), duplicates=rejected)
+        )
+        return unique, rejected
 
     def _algebra_models(self, models: List[SearchModel]) -> List[SearchModel]:
         """Apply algebraic manipulation to models.
@@ -1027,8 +1124,10 @@ class PGE:
 
     def print_summary(self) -> None:
         """Print model counts and evaluation statistics."""
+        total_memo_dups = sum(r.duplicates for r in self._loop_sub_times.memoize)
         print(f"\nnum peekd models:  {self.peekd_models}")
         print(f"num evald models:  {self.evald_models}")
+        print(f"num memoized:      {total_memo_dups}")
         print(f"num peek evals:    {self.peek_nfev} ({self.peek_nfev * self.peek_npts} point-evals)")
         print(f"num eval evals:    {self.eval_nfev} ({self.eval_nfev * self.eval_npts} point-evals)")
         print(f"num total evals:   {self.peek_nfev * self.peek_npts + self.eval_nfev * self.eval_npts}")
@@ -1043,7 +1142,9 @@ class PGE:
         """Print phase times, iteration stats, and per-model stage times."""
         runtime = time.time() - self.start_time
         loop_sub = {
-            k: v for k, v in self._phase_times.items() if k in ("grow", "filter", "algebra", "peek_eval", "full_eval")
+            k: v
+            for k, v in self._phase_times.items()
+            if k in ("grow", "filter", "algebra", "memo", "peek_eval", "full_eval")
         }
         if loop_sub:
             self._phase_times["search_loop"] = sum(loop_sub.values())
@@ -1082,6 +1183,11 @@ class PGE:
             print("\n  Algebra Per-Method:")
             self._print_algebra_method_details()
 
+        if self._loop_sub_times.memoize:
+            print("\n  Memoize Breakdown:")
+            for i, rec in enumerate(self._loop_sub_times.memoize):
+                print(f"    memo {i}:  in={rec.in_count}  unique={rec.unique}  duplicates={rec.duplicates}")
+
         # Per-model timing stats aggregated from SearchModel.timings
         build_times = [m.timings.build_time for m in self.final if m.timings.build_time > 0]
         fit_times = [m.timings.fit_time for m in self.final if m.timings.fit_time > 0]
@@ -1119,6 +1225,7 @@ class PGE:
             ("grow", loop_sub.get("grow", 0)),
             ("filter", loop_sub.get("filter", 0)),
             ("algebra", loop_sub.get("algebra", 0)),
+            ("memo", loop_sub.get("memo", 0)),
             ("peek_eval", loop_sub.get("peek_eval", 0)),
             ("full_eval", loop_sub.get("full_eval", 0)),
         ]
@@ -1211,6 +1318,9 @@ class PGE:
                     meth_t = method_info["time"]
                     pct = meth_t / alg_total * 100 if alg_total > 0 else 0
                     print(f"        {method_info['method']:12s}  {meth_t:.4f}s  ({pct:5.1f}%)")
+            print(
+                f"      memo          {self._loop_stage_times.memo_time[it]:.4f}s ({self._loop_stage_times.memo_dups[it]} dups)"
+            )
             print(f"      peek_eval     {peek_t:.4f}s")
             print(f"      full_eval     {full_t:.4f}s")
 

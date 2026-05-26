@@ -63,6 +63,10 @@ class IterationStageTimes:
         List of peek-evaluation-phase durations per iteration (seconds).
     full_eval:
         List of full-evaluation-phase durations per iteration (seconds).
+    memo_time:
+        List of memo-phase durations per iteration (seconds).
+    memo_dups:
+        List of memo duplicate counts per iteration.
     """
 
     grow: list[float] = field(default_factory=list)
@@ -70,6 +74,8 @@ class IterationStageTimes:
     algebra: list[float] = field(default_factory=list)
     peek_eval: list[float] = field(default_factory=list)
     full_eval: list[float] = field(default_factory=list)
+    memo_time: list[float] = field(default_factory=list)
+    memo_dups: list[int] = field(default_factory=list)
 
 
 @dataclass
@@ -244,6 +250,8 @@ class IterationProgress:
     avg_grown_size: float = 0.0
     avg_filtered_size: float = 0.0
     avg_algebra_size: float = 0.0
+    memoized: int = 0
+    memoized: int = 0
 
 
 class SearchModel:
