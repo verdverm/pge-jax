@@ -334,11 +334,27 @@ class Grower:
         if self.shrinker:
             shrunk = self._shrinker(M.orig)
 
-        var_models = [SearchModel(e, p_id=M.id, reln="var_xpnd") for e in var_expands if e != C]
-        big_models = [SearchModel(e, p_id=M.id, reln="add_bigr") for e in add_biggers if e != C]
-        add_models = [SearchModel(e, p_id=M.id, reln="add_xpnd") for e in add_expands if e != C]
-        mul_models = [SearchModel(e, p_id=M.id, reln="mul_xpnd") for e in mul_expands if e != C]
-        shrunk_models = [SearchModel(e, p_id=M.id, reln="shrunk") for e in shrunk if e != C]
+        def _make_models(exprs, reln):
+            result: List[SearchModel] = []
+            for e in exprs:
+                if e == C:
+                    continue
+                rewritten, cs = SearchModel.rewrite_coeff_only(e)
+                # Model A: raw form (expr property will expand on first access)
+                m_raw = SearchModel(rewritten, xs=self.xs, cs=cs, p_id=M.id, reln=reln)
+                # Model B: expanded form (set _expr directly, skip lazy expand)
+                expanded = sympy.expand(rewritten)
+                m_expanded = SearchModel(expanded, xs=self.xs, cs=cs, p_id=M.id, reln=reln)
+                m_expanded._expr = expanded
+                result.append(m_raw)
+                result.append(m_expanded)
+            return result
+
+        var_models: List[SearchModel] = _make_models(var_expands, "var_xpnd")
+        big_models: List[SearchModel] = _make_models(add_biggers, "add_bigr")
+        add_models: List[SearchModel] = _make_models(add_expands, "add_xpnd")
+        mul_models: List[SearchModel] = _make_models(mul_expands, "mul_xpnd")
+        shrunk_models: List[SearchModel] = _make_models(shrunk, "shrunk")
 
         return var_models + big_models + add_models + mul_models + shrunk_models
 

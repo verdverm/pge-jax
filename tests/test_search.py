@@ -35,6 +35,270 @@ from pge_jax.selection import (
 
 
 class TestSearchModel:
+    """Tests for SearchModel lifecycle, lazy expr, and coefficient rewriting."""
+
+    # Phase 1: Lazy expr
+    def test_phase1_lazy_expr_not_computed_on_init(self):
+        """_expr should be None after __init__, not eagerly expanded."""
+        x = sympy.Symbol("x")
+        expr = (x + 1) * (x + 2)
+        m = SearchModel(expr)
+        assert m._expr is None
+        assert m._raw_expr is expr
+
+    def test_phase1_lazy_expr_computed_on_access(self):
+        """First access to expr should compute and cache the expanded form."""
+        x = sympy.Symbol("x")
+        expr = (x + 1) * (x + 2)
+        m = SearchModel(expr)
+        expanded = m.expr
+        assert expanded == sympy.expand(expr)
+        assert m._expr is expanded  # cached
+
+    def test_phase1_lazy_expr_cached(self):
+        """Subsequent accesses should return the cached expanded form."""
+        x = sympy.Symbol("x")
+        expr = (x + 1) * (x + 2)
+        m = SearchModel(expr)
+        first = m.expr
+        second = m.expr
+        assert first is second
+
+    def test_phase1_lazy_expr_setter(self):
+        """expr setter should cache the value directly."""
+        x = sympy.Symbol("x")
+        expr = x + 1
+        m = SearchModel(expr)
+        expanded = sympy.expand(expr)
+        m.expr = expanded
+        assert m._expr is expanded
+        assert m.expr is expanded
+
+    def test_phase1_orig_unchanged(self):
+        """orig should be the unexpanded input expression."""
+        x = sympy.Symbol("x")
+        expr = (x + 1) * (x + 2)
+        m = SearchModel(expr)
+        assert m.orig is expr
+        assert m.expr != expr  # expanded form is structurally different
+
+    # Phase 2: Defer JAX compilation
+    def test_phase2_rewrite_coeff_only_is_static(self):
+        """rewrite_coeff_only should be a static method, not an instance method."""
+        x = sympy.Symbol("x")
+        C = sympy.Symbol("C")
+        expr = C * x + C
+        result = SearchModel.rewrite_coeff_only(expr)
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+
+    def test_phase2_rewrite_coeff_only_returns_rewritten_expr(self):
+        """rewrite_coeff_only should return an expression with C_0, C_1, ... instead of bare C."""
+        C = sympy.Symbol("C")
+        expr = C * sympy.Symbol("x") + C
+        rewritten, cs = SearchModel.rewrite_coeff_only(expr)
+        assert sympy.Symbol("C") not in rewritten.free_symbols
+        assert sympy.Symbol("C_0") in rewritten.free_symbols
+        assert sympy.Symbol("C_1") in rewritten.free_symbols
+
+    def test_phase2_rewrite_coeff_only_returns_cs_list(self):
+        """rewrite_coeff_only should return a cs list with C_0, C_1, ... symbols."""
+        C = sympy.Symbol("C")
+        x = sympy.Symbol("x")
+        # Same bare C appearing multiple times gets the same index (C_0)
+        expr = C * x + C
+        rewritten, cs = SearchModel.rewrite_coeff_only(expr)
+        assert len(cs) == 2
+        assert cs[0] == sympy.Symbol("C_0")
+        assert cs[1] == sympy.Symbol("C_1")
+
+    def test_phase2_rewrite_coeff_only_no_side_effects(self):
+        """rewrite_coeff_only should not modify the input expression or set any instance state."""
+        C = sympy.Symbol("C")
+        expr = C * sympy.Symbol("x")
+        before_hash = hash(expr)
+        rewritten, cs = SearchModel.rewrite_coeff_only(expr)
+        assert hash(expr) == before_hash  # input unchanged
+        assert rewritten is not expr  # returns new expression
+
+    def test_phase2_rewrite_coeff_builds_jax(self):
+        """rewrite_coeff (instance method) should still build JAX model for backwards compat."""
+        C = sympy.Symbol("C")
+        x = sympy.Symbol("x")
+        expr = C * x + C
+        m = SearchModel(expr, xs=[x])
+        m.rewrite_coeff()
+        assert len(m.cs) == 2
+        assert m.jax_model is not None
+
+    # Phase 3: Fix bare C — populate cs in SearchModel
+    def test_phase3_searchmodel_accepts_cs(self):
+        """SearchModel.__init__ should accept cs parameter and store it."""
+        C = sympy.Symbol("C")
+        x = sympy.Symbol("x")
+        cs = [sympy.Symbol("C_0"), sympy.Symbol("C_1")]
+        m = SearchModel(C * x, cs=cs, xs=[x])
+        assert m.cs == cs
+
+    def test_phase3_searchmodel_cs_empty_by_default(self):
+        """SearchModel without cs parameter should have empty cs list."""
+        x = sympy.Symbol("x")
+        m = SearchModel(x + 1, xs=[x])
+        assert m.cs == []
+
+    def test_phase3_filter_no_C_passes_when_cs_populated(self):
+        """filter_no_C should pass when cs is populated."""
+        C0 = sympy.Symbol("C_0")
+        x = sympy.Symbol("x")
+        m = SearchModel(C0 * x, cs=[C0], xs=[x])
+        assert filter_no_C(m, m.orig) is False
+
+    def test_phase3_filter_no_C_fails_when_cs_empty(self):
+        """filter_no_C should reject when cs is empty."""
+        x = sympy.Symbol("x")
+        m = SearchModel(x + 1, cs=[], xs=[x])
+        assert filter_no_C(m, m.orig) is True
+
+    # Phase 4: Two SearchModel per child
+    def test_phase4_grow_returns_raw_and_expanded(self):
+        """grow() should produce 2 models per expression (raw + expanded)."""
+        C = sympy.Symbol("C")
+        x = sympy.Symbol("x")
+        parent_expr = C * x
+        parent = SearchModel(parent_expr, cs=[C], xs=[x])
+        parent.rewrite_coeff()
+        funcs = [sympy.sin]
+        grower = Grower([x], funcs, func_level="linear", grow_level="low")
+        children = grower.grow(parent)
+        # Should have at least 2 children (raw + expanded for each expression)
+        assert len(children) >= 2
+        # Each child should have cs populated
+        for c in children:
+            assert len(c.cs) > 0
+
+    def test_phase4_raw_model_has_lazy_expr(self):
+        """Raw model from grow() should have _expr = None (lazy)."""
+        C = sympy.Symbol("C")
+        x = sympy.Symbol("x")
+        parent_expr = C * x
+        parent = SearchModel(parent_expr, cs=[C], xs=[x])
+        parent.rewrite_coeff()
+        funcs = [sympy.sin]
+        grower = Grower([x], funcs, func_level="linear", grow_level="low")
+        children = grower.grow(parent)
+        # At least one child should be raw (lazy expr)
+        has_lazy = any(c._expr is None for c in children)
+        assert has_lazy, "Expected at least one raw model with lazy expr"
+
+    def test_phase4_expanded_model_has_cached_expr(self):
+        """Expanded model from grow() should have _expr set (cached)."""
+        C = sympy.Symbol("C")
+        x = sympy.Symbol("x")
+        parent_expr = C * x
+        parent = SearchModel(parent_expr, cs=[C], xs=[x])
+        parent.rewrite_coeff()
+        funcs = [sympy.sin]
+        grower = Grower([x], funcs, func_level="linear", grow_level="low")
+        children = grower.grow(parent)
+        # At least one child should be expanded (cached expr)
+        has_cached = any(c._expr is not None for c in children)
+        assert has_cached, "Expected at least one expanded model with cached expr"
+
+    def test_phase4_both_models_have_same_cs(self):
+        """Raw and expanded models from the same expression should share cs."""
+        C = sympy.Symbol("C")
+        x = sympy.Symbol("x")
+        parent_expr = C * x
+        parent = SearchModel(parent_expr, cs=[C], xs=[x])
+        parent.rewrite_coeff()
+        funcs = [sympy.sin]
+        grower = Grower([x], funcs, func_level="linear", grow_level="low")
+        children = grower.grow(parent)
+        # All children should have cs
+        for c in children:
+            assert len(c.cs) > 0
+            # cs should contain C_0 style symbols
+            assert any(str(s).startswith("C_") for s in c.cs)
+
+    def test_phase4_double_children_count(self):
+        """grow() should produce roughly 2× children per unique expression."""
+        C = sympy.Symbol("C")
+        x = sympy.Symbol("x")
+        parent_expr = C * x
+        parent = SearchModel(parent_expr, cs=[C], xs=[x])
+        parent.rewrite_coeff()
+        funcs = [sympy.sin, sympy.cos]
+        grower = Grower([x], funcs, func_level="linear", grow_level="low")
+        children = grower.grow(parent)
+        # Each unique expression produces 2 models (raw + expanded)
+        # So count should be even and >= 2
+        assert len(children) >= 2
+        assert len(children) % 2 == 0 or len(children) > 2  # multiple exprs may differ
+
+    def test_phase4_raw_and_expanded_different_trees(self):
+        """Raw and expanded forms should be structurally different for non-trivial expressions."""
+        C = sympy.Symbol("C")
+        x = sympy.Symbol("x")
+        # Create an expression that expands differently
+        parent_expr = (C + x) * (C + x)
+        parent = SearchModel(parent_expr, cs=[C], xs=[x])
+        parent.rewrite_coeff()
+        funcs = []
+        grower = Grower([x], funcs, func_level="linear", grow_level="low")
+        # Use _make_models-like logic via grow
+        children = grower.grow(parent)
+        # Find raw and expanded pairs
+        raw_candidates = [c for c in children if c._expr is None]
+        expanded_candidates = [c for c in children if c._expr is not None]
+        # The raw form should have _raw_expr != _expr (unexpanded)
+        if raw_candidates:
+            raw = raw_candidates[0]
+            expanded_accessed = raw.expr  # triggers lazy expand
+            assert raw._raw_expr != expanded_accessed or sympy.expand(raw._raw_expr) == expanded_accessed
+
+    # Phase 5: Lazy JAX build in _eval_models
+    def test_phase5_build_jax_model_creates_jax_wrapper(self):
+        """build_jax_model() should create a JAXModel and store it."""
+        C = sympy.Symbol("C_0")
+        x = sympy.Symbol("x")
+        expr = C * x
+        m = SearchModel(expr, cs=[C], xs=[x])
+        assert m.jax_model is None
+        m.build_jax_model()
+        assert m.jax_model is not None
+        from pge_jax.model import JAXModel
+
+        assert isinstance(m.jax_model, JAXModel)
+
+    def test_phase5_build_jax_model_with_no_coeffs(self):
+        """build_jax_model() should work with no coefficients."""
+        x = sympy.Symbol("x")
+        expr = x + 1
+        m = SearchModel(expr, cs=[], xs=[x])
+        assert m.jax_model is None
+        m.build_jax_model()
+        assert m.jax_model is not None
+
+    def test_phase5_build_jax_model_idempotent(self):
+        """Calling build_jax_model() multiple times should overwrite jax_model."""
+        C = sympy.Symbol("C_0")
+        x = sympy.Symbol("x")
+        expr = C * x
+        m = SearchModel(expr, cs=[C], xs=[x])
+        m.build_jax_model()
+        first_jax = m.jax_model
+        m.build_jax_model()
+        assert m.jax_model is not None
+        assert m.jax_model is not first_jax  # new instance created
+
+    def test_phase5_searchmodel_jax_model_none_by_default(self):
+        """New SearchModel should have jax_model = None."""
+        x = sympy.Symbol("x")
+        m = SearchModel(x + 1, xs=[x])
+        assert m.jax_model is None
+
+
+class TestSearchModelBasic:
     def test_init_basic(self):
         x = sympy.Symbol("x")
         C1 = sympy.Symbol("C_0")

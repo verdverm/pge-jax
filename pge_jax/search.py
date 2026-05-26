@@ -272,45 +272,40 @@ class PGE:
             )
 
         # Generate first expressions
-        first_exprs = self.multi_expanders[0]["grower"].first_exprs()
-        self._assign_iter_id(first_exprs)
+        initial_exprs = self.multi_expanders[0]["grower"].first_exprs()
+        self._assign_iter_id(initial_exprs)
 
-        # Filter
-        to_memo = filter_models(first_exprs, self._get_default_filters())
+        # Process-filter pipeline
+        filtered = filter_models(initial_exprs, self._get_default_filters())
+        unique = self._memoize_models(filtered)
 
-        # Memoize
-        to_alge = []
+        # Algebra pass
+        algebrad = []
         if self.algebra_methods:
-            to_alge = self._memoize_models(to_memo)
-
-            # Algebra
-            algebrad = self._algebra_models(to_alge)
+            algebrad = self._algebra_models(unique)
             self._assign_iter_id(algebrad)
-
-            # Filter + memoize algebra results
-            to_memo = filter_models(algebrad, self._get_default_filters())
-            to_memo = self._memoize_models(to_memo)
-
-        to_peek = self._memoize_models(to_memo)
+            algebrad_filtered = filter_models(algebrad, self._get_default_filters())
+            algebrad_unique = self._memoize_models(algebrad_filtered)
+        else:
+            algebrad_unique = []
 
         # Combine algebra and non-algebra models
-        to_peek = to_alge + to_peek
+        candidates = algebrad_unique + unique
 
-        # Evaluate
+        # Peek evaluation
         if self.peek_fraction == 0:
-            to_eval = to_peek
+            to_eval = candidates
         else:
-            self._eval_models(to_peek, peek=True)
-            self._peek_push_models(to_peek)
+            evaluated = self._eval_models(candidates, peek=True)
+            self._peek_push_models(evaluated)
             to_eval = self._peek_pop() + self._peek_pop()  # double pop first time
 
-        self._eval_models(to_eval)
+        # Full evaluation
+        evaluated = self._eval_models(to_eval)
 
         # Push to final and population
-        self._final_push(to_eval)
-        self.multi_expanders[0]["nsga2_list"].extend(
-            m for m in to_eval if m is not None and not m.errored and m.score is not None
-        )
+        self._final_push(evaluated)
+        self.multi_expanders[0]["nsga2_list"].extend(evaluated)
 
         self.curr_time = time.time()
 
@@ -357,34 +352,39 @@ class PGE:
             self._assign_iter_id(expanded)
 
             # Filter
-            to_memo = filter_models(expanded, self._get_default_filters())
+            filtered = filter_models(expanded, self._get_default_filters())
 
             self._loop_phase_times["filter"] = self._loop_phase_times.get("filter", 0) + time.time() - t0
 
             t0 = time.time()
 
             # Algebra
-            to_alge = []
+            algebrad: List[SearchModel] = []
+            algebrad_unique: List[SearchModel] = []
             if self.algebra_methods:
-                to_alge = self._memoize_models(to_memo)
-                algebrad = self._algebra_models(to_alge)
+                unique = self._memoize_models(filtered)
+                algebrad = self._algebra_models(unique)
                 self._assign_iter_id(algebrad)
-                to_memo = filter_models(algebrad, self._get_default_filters())
-                to_memo = self._memoize_models(to_memo)
+                algebrad_filtered = filter_models(algebrad, self._get_default_filters())
+                algebrad_unique = self._memoize_models(algebrad_filtered)
 
             self._loop_phase_times["algebra"] = self._loop_phase_times.get("algebra", 0) + time.time() - t0
 
             t0 = time.time()
 
-            to_peek = self._memoize_models(to_memo)
-            to_peek = to_alge + to_peek
+            # Memoize non-algebra models
+            unique = self._memoize_models(filtered)
+
+            # Combine algebra and non-algebra models
+            candidates = algebrad_unique + unique
 
             # Peek evaluate
+            to_eval: List[SearchModel] = []
             if self.peek_fraction == 0:
-                to_eval = to_peek
+                to_eval = candidates
             else:
-                self._eval_models(to_peek, peek=True)
-                self._peek_push_models(to_peek)
+                peek_evaluated = self._eval_models(candidates, peek=True)
+                self._peek_push_models(peek_evaluated)
                 to_eval = self._peek_pop()
 
             self._loop_phase_times["peek_eval"] = self._loop_phase_times.get("peek_eval", 0) + time.time() - t0
@@ -393,9 +393,9 @@ class PGE:
 
             # Full evaluate
             if to_eval:
-                self._eval_models(to_eval)
-                self._final_push(to_eval)
-                self.multi_expanders[0]["nsga2_list"].extend(to_eval)
+                full_evaluated = self._eval_models(to_eval)
+                self._final_push(full_evaluated)
+                self.multi_expanders[0]["nsga2_list"].extend(full_evaluated)
 
             self._loop_phase_times["full_eval"] = self._loop_phase_times.get("full_eval", 0) + time.time() - t0
 
@@ -405,8 +405,10 @@ class PGE:
     # Evaluation helpers
     # ------------------------------------------------------------------
 
-    def _eval_models(self, models: List[SearchModel], peek: bool = False) -> None:
+    def _eval_models(self, models: List[SearchModel], peek: bool = False) -> List[SearchModel]:
         """Fit and evaluate a list of models.
+
+        Models that fail during evaluation are removed from the returned list.
 
         Parameters
         ----------
@@ -414,9 +416,26 @@ class PGE:
             Models to evaluate.
         peek:
             If ``True``, store results in peek attributes.
+
+        Returns
+        -------
+        list[SearchModel]
+            Models that were successfully evaluated.
         """
+        succeeded = []
         for modl in models:
-            if modl.errored or modl.jax_model is None:
+            if modl.errored:
+                continue
+
+            # Build JAX model lazily if not yet created
+            if modl.jax_model is None:
+                try:
+                    modl.build_jax_model()
+                except Exception:
+                    modl.errored = True
+                    continue
+
+            if modl.jax_model is None:
                 modl.errored = True
                 continue
 
@@ -476,9 +495,12 @@ class PGE:
 
                 # Track parent improvement
                 self._compute_improvements(modl)
+                succeeded.append(modl)
 
             except Exception:
                 modl.errored = True
+
+        return succeeded
 
     def _compute_improvements(self, modl: SearchModel) -> None:
         """Compute improvement over parent model."""

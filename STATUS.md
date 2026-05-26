@@ -2,13 +2,13 @@
 
 ## Overview
 
-Prioritized Grammar Enumeration (PGE) for symbolic regression, implemented in JAX. The core search loop is complete with 92 passing tests.
+Prioritized Grammar Enumeration (PGE) for symbolic regression, implemented in JAX. The core search loop is complete with 116 passing tests (92 original + 24 new phase validation tests).
 
 **Priority order:** (1) Grow phase optimization → (2) Coefficient expansion (LAST).
 
 | Upgrade | Priority | Scope | Impact | Status |
 |---|---|---|---|---|
-| **Grow phase optimization** | 1 | Expression enumeration performance | 2–5× faster grow, bare C bug fix, lazy JAX | Not started |
+| **Grow phase optimization** | 1 | Expression enumeration performance | Bare C bug fix, lazy JAX | Partial |
 | **Coefficient expansion** | 3 (last) | Coefficient system + expression generation | New coefficient kinds (named, physical), expression-level dedup | Not started |
 
 Peek refactor is complete and not listed above.
@@ -65,61 +65,74 @@ Nothing implemented. The following code paths are confirmed slow/broken:
 
 **Files:** `search_model.py`
 
-- Store raw expression in `__init__`: `self._raw_expr = expr`, set `self.expr = None`
+- Store raw expression in `__init__`: `self._raw_expr = expr`, set `self._expr = None`
 - Convert `expr` to a property: compute `sympy.expand(self._raw_expr)` on first access
-- `orig` stays as the unexpanded input
+- `orig` stays as the unexpanded input (also set to same value as `_raw_expr` in `__init__` — redundant but needed by `filter_just_C`)
 - `size()`, `calc_tree_size()`, `calc_jac_size()` all access `self.expr` — property is fine, first access triggers expand, subsequent accesses are cached
 - `pretty_expr()` also accesses `self.expr` — no change needed
 - `SearchModel.__hash__` uses `self.id`, not expression — no change needed
+- Added `expr` setter for direct cache assignment (used by Phase 4)
 
-**Verification:** All existing code accesses `self.expr` which is already computed eagerly. After this change, first access defers to lazy computation. No behavioral change.
+**Verification:** ✅ All 116 tests pass. First access defers to lazy computation. No behavioral change.
+
+**Tests added:** `test_phase1_lazy_expr_not_computed_on_init`, `test_phase1_lazy_expr_computed_on_access`, `test_phase1_lazy_expr_cached`, `test_phase1_lazy_expr_setter`, `test_phase1_orig_unchanged`
 
 ### Phase 2: Defer JAX compilation
 
 **Files:** `search_model.py`, `model.py`
 
 - Split `rewrite_coeff()` into two steps:
-  1. `_rewrite_coeff_only(expr)` — symbol rewriting only, returns `(rewritten_expr, cs_list)`. No JAX, no side effects.
+  1. `rewrite_coeff_only(expr)` — static method, symbol rewriting only, returns `(rewritten_expr, cs_list)`. No JAX, no side effects.
   2. `build_jax_model(expr, cs, xs)` — new method on `SearchModel` that creates `JAXModel(expr, cs=cs, xs=xs)`
-- `rewrite_coeff()` (existing) calls both steps (keeps current behavior for `first_exprs()` and `manip_model()`)
-- `grow()` calls only `_rewrite_coeff_only()` to get `cs` list, passes it to `SearchModel` constructor
+- `rewrite_coeff()` (instance method) calls both steps (keeps current behavior for `first_exprs()` and `manip_model()`)
+- `grow()` calls only `rewrite_coeff_only()` to get `cs` list, passes it to `SearchModel` constructor
 - `SearchModel.__init__` accepts optional `cs` and stores it, sets `self.jax_model = None`
 - `build_jax_model()` is called lazily in `_eval_models()` when a model is selected for evaluation
 
 **Why this matters:** `rewrite_coeff()` currently builds `JAXModel` which calls `_build_jax_functions()` → `sympy.lambdify()` → XLA compilation. This happens eagerly for every child in `first_exprs()` and `grow()`. Deferring compilation means only models that survive filtering and memoization get compiled.
 
+**Tests added:** `test_phase2_rewrite_coeff_only_is_static`, `test_phase2_rewrite_coeff_only_returns_rewritten_expr`, `test_phase2_rewrite_coeff_only_returns_cs_list`, `test_phase2_rewrite_coeff_only_no_side_effects`, `test_phase2_rewrite_coeff_builds_jax`
+
 ### Phase 3: Fix bare C — populate `cs` in `grow()`
 
 **Files:** `expand.py`, `search_model.py`
 
-- `grow()` calls `_rewrite_coeff_only()` on each generated expression to get `(rewritten_expr, cs_list)`
+- `grow()` calls `rewrite_coeff_only()` on each generated expression to get `(rewritten_expr, cs_list)`
 - Pass `cs=cs_list` to `SearchModel` constructor
 - Children now have `cs = [C_0, C_1, ...]` instead of `cs = []`
 - `filter_no_C` now passes for children (they have coefficients)
-- `jax_model` stays `None` until Phase 4 calls `build_jax_model()`
+- `jax_model` stays `None` until Phase 5 calls `build_jax_model()`
 
-**Bare C bug fix:** Previously, children had bare `C` in their expressions and `cs = []`. When `jax_model` was eventually built, `_extract_coeffs_and_vars()` put bare `C` into `vars_` because it only recognizes `C_` and `C[` prefixes. Now `rewrite_coeff()` replaces bare `C` with `C_0, C_1, ...` before the expression leaves `grow()`.
+**Bare C bug fix:** Previously, children had bare `C` in their expressions and `cs = []`. When `jax_model` was eventually built, `_extract_coeffs_and_vars()` put bare `C` into `vars_` because it only recognises `C_` and `C[` prefixes. Now `rewrite_coeff()` replaces bare `C` with `C_0, C_1, ...` before the expression leaves `grow()`.
+
+**Tests added:** `test_phase3_searchmodel_accepts_cs`, `test_phase3_searchmodel_cs_empty_by_default`, `test_phase3_filter_no_C_passes_when_cs_populated`, `test_phase3_filter_no_C_fails_when_cs_empty`
 
 ### Phase 4: Two `SearchModel` per child (raw + expanded)
 
 **Files:** `expand.py`
 
 - After rewriting in `grow()`, create two `SearchModel` instances per child:
-  - Model A: `SearchModel(raw_expr, cs=cs, xs=xs)` — raw form, `expr` property will expand on first access
-  - Model B: `SearchModel(expanded_expr, cs=cs, xs=xs)` — expanded form, `expr` property returns cached expanded
+  - Model A: `SearchModel(rewritten, xs=self.xs, cs=cs, p_id=M.id, reln=reln)` — raw form, `_expr = None` (lazy)
+  - Model B: `SearchModel(expanded, xs=self.xs, cs=cs, p_id=M.id, reln=reln)` with `m_expanded._expr = expanded` — expanded form, `_expr` cached
 - Both have the same `cs` and `xs` (rewriting is the same for both)
 - Both have `jax_model = None` (deferred to Phase 5)
 - Returns ~2× children but explores different operator match surfaces
 
 **Rationale:** The raw form `(C*x0 + C) * (C*x1 + C)` has a `Mul` at the top with two `Add` children. The expanded form `C**2*x0*x1 + C**2*x0 + C**2*x1 + C**2` has an `Add` at the top with four `Mul` children. Different tree structures → different grow operator matches → different children.
 
+**Tests added:** `test_phase4_grow_returns_raw_and_expanded`, `test_phase4_raw_model_has_lazy_expr`, `test_phase4_expanded_model_has_cached_expr`, `test_phase4_both_models_have_same_cs`, `test_phase4_double_children_count`, `test_phase4_raw_and_expanded_different_trees`
+
 ### Phase 5: Build JAX lazily in `_eval_models()`
 
 **Files:** `search.py`
 
-- In `_eval_models()`, before calling `fit_model()`, check if `modl.jax_model is None`
-- If `None`, call `modl.build_jax_model()` to create it
+- `_eval_models()` now returns `List[SearchModel]` (only successfully evaluated models)
+- Before calling `fit_model()`, check if `modl.jax_model is None`
+- If `None`, call `modl.build_jax_model()` in a try/except block
+- Models that fail JAX compilation are marked `errored = True` and skipped
 - This ensures JAX compilation only happens for models that survive filtering + memoization + peek selection
+
+**Tests added:** `test_phase5_build_jax_model_creates_jax_wrapper`, `test_phase5_build_jax_model_with_no_coeffs`, `test_phase5_build_jax_model_idempotent`, `test_phase5_searchmodel_jax_model_none_by_default`
 
 ### Phase 6: Move `_uniquify()` after filtering
 
@@ -146,17 +159,12 @@ Nothing implemented. The following code paths are confirmed slow/broken:
 
 ### Verification
 
-- All 92 existing tests must pass after each phase
+- All 116 tests pass after each phase (92 original + 24 new phase validation tests)
 - Add benchmark comparing grow time per iteration before/after (Phase 7)
 - Track: children per parent, filter rejection rate, time per child, JAX compilations per iteration
 
 ### TODO
 
-- [ ] Phase 1: Lazy `expr` in `SearchModel`
-- [ ] Phase 2: Defer JAX compilation (split `rewrite_coeff`)
-- [ ] Phase 3: Fix bare C — populate `cs` in `grow()`
-- [ ] Phase 4: Two `SearchModel` per child (raw + expanded)
-- [ ] Phase 5: Build JAX lazily in `_eval_models()`
 - [ ] Phase 6: Move `_uniquify()` after filtering
 - [ ] Phase 7: Reduce branching factor
 - [ ] Add benchmarks

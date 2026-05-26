@@ -130,7 +130,8 @@ class SearchModel:
 
         # Expression
         self.orig: sympy.Expr = expr
-        self.expr: sympy.Expr = sympy.expand(expr)
+        self._raw_expr: sympy.Expr = expr
+        self._expr: Optional[sympy.Expr] = None
         self.pretty: Optional[str] = None
 
         # Variables and coefficients
@@ -189,6 +190,18 @@ class SearchModel:
 
     def __hash__(self) -> int:
         return self.id
+
+    @property
+    def expr(self) -> sympy.Expr:
+        """Expanded expression, computed lazily on first access."""
+        if self._expr is None:
+            self._expr = sympy.expand(self._raw_expr)
+        return self._expr
+
+    @expr.setter
+    def expr(self, value: sympy.Expr) -> None:
+        """Set the expanded expression (caches it)."""
+        self._expr = value
 
     @property
     def values(self) -> Tuple[float, ...]:
@@ -319,32 +332,37 @@ class SearchModel:
     # Coefficient rewriting (converts bare C to C_0, C_1, ...)
     # ------------------------------------------------------------------
 
-    def rewrite_coeff(self) -> None:
+    @staticmethod
+    def rewrite_coeff_only(expr: sympy.Expr) -> Tuple[sympy.Expr, list]:
         """Rewrite bare ``sympy.Symbol('C')`` into ``C_0, C_1, ...``.
 
-        Replaces all bare ``C`` atoms in ``self.orig`` with
-        sequentially-numbered coefficient symbols, updates
-        ``self.expr`` and ``self.cs``, and builds the JAX wrapper.
+        Pure symbol rewriting with no side effects.
+
+        Parameters
+        ----------
+        expr:
+            Expression containing bare ``sympy.Symbol('C')`` atoms.
+
+        Returns
+        -------
+        tuple[sympy.Expr, list[sympy.Symbol]]
+            ``(rewritten_expr, cs_list)`` where *cs_list* contains
+            ``C_0, C_1, ...`` in order of first appearance.
         """
-        from pge_jax.model import JAXModel as _JAXModel
-
         ii = 0
-        expr, ii = self._rewrite_coeff_helper(self.orig, 0)
-        self.expr = expr
-        self.cs = [sympy.Symbol(f"C_{i}") for i in range(ii)]
-        self.ncs = len(self.cs)
+        rewritten, ii = SearchModel._rewrite_coeff_helper_static(expr, 0)
+        cs = [sympy.Symbol(f"C_{i}") for i in range(ii)]
+        return rewritten, cs
 
-        # Build JAX wrapper
-        self.jax_model = _JAXModel(expr, cs=self.cs, xs=self.xs)
-
-    def _rewrite_coeff_helper(self, expr, ii: int):
-        """Recursive helper for :meth:`rewrite_coeff`."""
+    @staticmethod
+    def _rewrite_coeff_helper_static(expr, ii: int):
+        """Static recursive helper for :meth:`rewrite_coeff_only`."""
         ret = expr
         if not expr.is_Atom:
             args = []
             for e in expr.args:
                 if not e.is_Atom:
-                    ee, ii = self._rewrite_coeff_helper(e, ii)
+                    ee, ii = SearchModel._rewrite_coeff_helper_static(e, ii)
                     args.append(ee)
                 elif e == sympy.Symbol("C"):
                     args.append(sympy.Symbol(f"C_{ii}"))
@@ -354,6 +372,29 @@ class SearchModel:
             args = list(args)
             ret = expr.func(*args)
         return ret, ii
+
+    def rewrite_coeff(self) -> None:
+        """Rewrite bare ``sympy.Symbol('C')`` into ``C_0, C_1, ...``.
+
+        Replaces all bare ``C`` atoms in ``self.orig`` with
+        sequentially-numbered coefficient symbols, updates
+        ``self.expr`` and ``self.cs``, and builds the JAX wrapper.
+        """
+        rewritten, cs = self.rewrite_coeff_only(self.orig)
+        self.expr = rewritten
+        self.cs = cs
+        self.ncs = len(self.cs)
+        self.build_jax_model()
+
+    def build_jax_model(self) -> None:
+        """Build the JAX evaluation wrapper from the current expression.
+
+        Creates a :class:`JAXModel` from ``self.expr``, ``self.cs``, and
+        ``self.xs``, storing it in ``self.jax_model``.
+        """
+        from pge_jax.model import JAXModel as _JAXModel
+
+        self.jax_model = _JAXModel(self.expr, cs=self.cs, xs=self.xs)
 
     # ------------------------------------------------------------------
     # Fitness comparison helpers
