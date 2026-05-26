@@ -8,7 +8,7 @@ Prioritized Grammar Enumeration (PGE) for symbolic regression, implemented in JA
 |---|---|---|
 | **Peek refactor** | Search loop parameter interface | Behavioral shift: peek off by default, fraction-based |
 | **Coefficient expansion** | Coefficient system + expression generation | New coefficient kinds (named, physical), expression-level dedup |
-| **Grow phase optimization** | Expression enumeration performance | 2–5× speedup, two-model per child architecture |
+| **Grow phase optimization** | Expression enumeration performance | Two-model per child architecture |
 
 ---
 
@@ -93,7 +93,7 @@ Key design decisions from user:
 
 ### Brief
 
-The grow phase dominates search time at 96% of `search_loop` (~18.8s per iteration). Three architectural issues are identified:
+The grow phase dominates search time. Three architectural issues are identified:
 
 1. `sympy.expand()` is called eagerly in `SearchModel.__init__` for every child, but `SearchModel` is a generic wrapper that shouldn't care about expression normalization
 2. Raw and expanded forms are structurally different trees that produce different children when `grow()` is applied — currently only the expanded form exists (hidden in `__init__`)
@@ -116,28 +116,9 @@ The grow phase dominates search time at 96% of `search_loop` (~18.8s per iterati
 
 ### Important Context
 
-**Cost breakdown per iteration (20 parents, ~5,200 children):**
-
-| Phase | Time | % of search_loop |
-|---|---|---|
-| `grow()` — tree traversal + expression construction | ~17.6 s | 96.0% |
-| `_uniquify()` — `evalf()` dedup | ~0.3 s | 1.6% |
-| `SearchModel.__init__` — `sympy.expand()` + object creation | ~0.2 s | 1.1% |
-| `filter_models()` — filter tree walks | ~0.1 s | 0.5% |
-| `peek_eval()` — JAX fitting on subset | ~0.05 s | 0.3% |
-| `full_eval()` — JAX fitting on full data | ~0.5 s | 2.7% |
-
-**Per parent, ~261 children are produced:**
-
-| Operator | Children | What it does |
-|---|---|---|
-| `var_xpnd` | ~3,100/iter | Variable substitution — replace variables with complex terms |
-| `add_xpnd` | ~2,400/iter | Addition extension — add terms to Add nodes |
-| `mul_xpnd` | ~4,800/iter | Multiplication extension — multiply by new factors |
-
 **Two-model per child rationale:** The raw form `(C*x0 + C) * (C*x1 + C)` has a `Mul` at the top with two `Add` children. The expanded form `C**2*x0*x1 + C**2*x0 + C**2*x1 + C**2` has an `Add` at the top with four `Mul` children. Different tree structures → different grow operator matches → different children. Growing from both doubles the exploration surface.
 
-**Interaction with coefficient expansion:** Fixing the bare `C` bug requires calling `rewrite_coeff()` in `grow()`. Currently this builds `jax_model` eagerly, triggering JAX compilation for every child (~52,000 compilations per 10-iteration run). The deferred JAX compilation proposed here makes the bare `C` fix viable. These two upgrades should be coordinated — the deferred compilation work benefits both.
+**Interaction with coefficient expansion:** Fixing the bare `C` bug requires calling `rewrite_coeff()` in `grow()`. Currently this builds `jax_model` eagerly, triggering JAX compilation for every child. The deferred JAX compilation proposed here makes the bare `C` fix viable. These two upgrades should be coordinated — the deferred compilation work benefits both.
 
 ---
 
