@@ -13,12 +13,237 @@ filtering, memoization, expansion, evaluation, and selection.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional, Tuple
 
 import sympy  # type: ignore[import-untyped]
 
 if TYPE_CHECKING:
     from pge_jax.model import JAXModel
+
+
+@dataclass
+class StageTimings:
+    """Per-model timing for each evaluation stage.
+
+    All values are in seconds.  Only populated for models that were
+    successfully evaluated (not errored).
+
+    Attributes
+    ----------
+    build_time:
+        Time to compile the JAX model (sympy.lambdify + jax.jacfwd).
+    fit_time:
+        Time spent in the Levenberg-Marquardt optimizer.
+    eval_time:
+        Time to predict on full data and compute regression metrics.
+    """
+
+    build_time: float = 0.0
+    fit_time: float = 0.0
+    eval_time: float = 0.0
+
+
+@dataclass
+class IterationStageTimes:
+    """Per-iteration stage timing aggregates.
+
+    Stores per-iteration values (not summed) so callers can compute
+    min / max / avg without double-counting.
+
+    Attributes
+    ----------
+    grow:
+        List of grow-phase durations per iteration (seconds).
+    filter:
+        List of filter-phase durations per iteration (seconds).
+    algebra:
+        List of algebra-phase durations per iteration (seconds).
+    peek_eval:
+        List of peek-evaluation-phase durations per iteration (seconds).
+    full_eval:
+        List of full-evaluation-phase durations per iteration (seconds).
+    """
+
+    grow: list[float] = field(default_factory=list)
+    filter: list[float] = field(default_factory=list)
+    algebra: list[float] = field(default_factory=list)
+    peek_eval: list[float] = field(default_factory=list)
+    full_eval: list[float] = field(default_factory=list)
+
+
+@dataclass
+class FilterBreakdown:
+    """Per-filter rejection counts for one filter run.
+
+    Attributes
+    ----------
+    filter_name:
+        Name of the filter function.
+    rejections:
+        Number of models this filter rejected.
+    """
+
+    filter_name: str
+    rejections: int
+
+
+@dataclass
+class MemoizeRecord:
+    """Memoization statistics for one memoize call.
+
+    Attributes
+    ----------
+    in_count:
+        Number of models passed to memoize.
+    unique:
+        Number of new unique models inserted.
+    duplicates:
+        Number of duplicates skipped.
+    """
+
+    in_count: int
+    unique: int
+    duplicates: int
+
+
+@dataclass
+class GrowOperatorStats:
+    """Per-operator growth statistics for one parent model.
+
+    Attributes
+    ----------
+    operator:
+        Operator name (e.g. ``"var_xpnd"``, ``"add_xpnd"``, ``"mul_xpnd"``,
+        ``"shrunk"``, ``"add_bigr"``).
+    raw_exprs:
+        Number of raw expressions produced before uniquify.
+    unique_exprs:
+        Number of unique expressions after uniquify.
+    children:
+        Number of SearchModel children (raw + expanded = 2× unique).
+    avg_size:
+        Average tree size of produced expressions.
+    """
+
+    operator: str
+    raw_exprs: int
+    unique_exprs: int
+    children: int
+    avg_size: float
+
+
+@dataclass
+class GrowOperatorTime:
+    """Per-operator timing for one parent model.
+
+    Attributes
+    ----------
+    operator:
+        Operator name (e.g. ``"var_xpnd"``, ``"add_xpnd"``, ``"mul_xpnd"``,
+        ``"shrunk"``, ``"add_bigr"``).
+    time:
+        Duration spent on this operator (seconds).
+    """
+
+    operator: str
+    time: float
+
+
+@dataclass
+class IterationSubTimes:
+    """Per-iteration sub-stage timing details.
+
+    Attributes
+    ----------
+    grow_expander:
+        List of lists of dicts — one per iteration, each containing
+        dicts with ``expander`` (index), ``time``, ``popped``, ``children``.
+    grow_operators:
+        List of lists of ``GrowOperatorStats`` — one per iteration,
+        one per parent model grown.
+    grow_operator_times:
+        List of lists of ``GrowOperatorTime`` — one per iteration,
+        one per parent model grown, per operator.
+    filter_in:
+        List of model counts fed into filter per iteration.
+    filter_out:
+        List of model counts passing filter per iteration.
+    filter_breakdown:
+        List of lists of ``FilterBreakdown`` — one per iteration,
+        one per filter function.
+    filter_time:
+        Filter phase duration per iteration.
+    memoize:
+        List of ``MemoizeRecord`` for each memoize call across all iterations.
+    algebra_methods:
+        List of lists of dicts — one per iteration, per algebra method.
+    """
+
+    grow_expander: list[list[dict]] = field(default_factory=list)
+    grow_operators: list[list[list[GrowOperatorStats]]] = field(default_factory=list)
+    grow_operator_times: list[list[list[GrowOperatorTime]]] = field(default_factory=list)
+    filter_in: list[int] = field(default_factory=list)
+    filter_out: list[int] = field(default_factory=list)
+    filter_breakdown: list[list[FilterBreakdown]] = field(default_factory=list)
+    filter_time: list[float] = field(default_factory=list)
+    memoize: list[MemoizeRecord] = field(default_factory=list)
+    algebra_methods: list[list[dict]] = field(default_factory=list)
+
+
+@dataclass
+class IterationProgress:
+    """Per-iteration summary statistics.
+
+    Attributes
+    ----------
+    iteration:
+        Iteration number (0-based).
+    elapsed:
+        Wall-clock time since search started (seconds).
+    iter_dur:
+        Duration of this iteration (seconds).
+    grown:
+        Number of models grown in this iteration.
+    filtered_in:
+        Models fed into filter.
+    filtered_out:
+        Models passing filter.
+    algebrad:
+        Number of algebraic variants produced.
+    algebrad_unique:
+        Unique algebraic variants after memoization.
+    peek_evaluated:
+        Number of models peek-evaluated.
+    fully_evaluated:
+        Number of models fully evaluated.
+    best_score:
+        Best score seen so far (lowest).
+    population_size:
+        Size of nsga2_list in the first expander.
+    avg_grown_size:
+        Average tree size of grown models.
+    avg_filtered_size:
+        Average tree size of models passing filter.
+    avg_algebra_size:
+        Average tree size of algebra variants.
+    """
+
+    iteration: int = 0
+    elapsed: float = 0.0
+    iter_dur: float = 0.0
+    grown: int = 0
+    filtered_in: int = 0
+    filtered_out: int = 0
+    algebrad: int = 0
+    algebrad_unique: int = 0
+    peek_evaluated: int = 0
+    fully_evaluated: int = 0
+    best_score: float = float("inf")
+    population_size: int = 0
+    avg_grown_size: float = 0.0
+    avg_filtered_size: float = 0.0
+    avg_algebra_size: float = 0.0
 
 
 class SearchModel:
@@ -184,6 +409,9 @@ class SearchModel:
         self.peek_nfev: int = 0
         self.eval_nfev: int = 0
         self.total_fev: int = 0
+
+        # Per-model stage timing
+        self.timings: StageTimings = StageTimings()
 
         # All done
         self.inited = True

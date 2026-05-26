@@ -7,13 +7,15 @@ extension, multiplication extension, and shrinker operators.
 
 from __future__ import annotations
 
+import time
 from itertools import combinations as combos_woutR
 from itertools import combinations_with_replacement as combos_withR
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import sympy  # type: ignore[import-untyped]
 
-from pge_jax.search_model import SearchModel
+from pge_jax.filters import C
+from pge_jax.search_model import GrowOperatorStats, GrowOperatorTime, SearchModel
 
 C = sympy.Symbol("C")
 
@@ -312,27 +314,33 @@ class Grower:
         list[SearchModel]
             Child models from all expansion operators.
         """
-        var_expands = self._var_sub(M.orig)
-        add_expands = self._add_extend(M.orig)
-        mul_expands = self._mul_extend(M.orig)
+        var_raw = self._var_sub(M.orig)
+        add_raw = self._add_extend(M.orig)
+        mul_raw = self._mul_extend(M.orig)
 
-        var_expands_C = [self._toggle_plus_C(e) for e in var_expands]
-        add_expands_C = [self._toggle_plus_C(e) for e in add_expands]
-        mul_expands_C = [self._toggle_plus_C(e) for e in mul_expands]
+        var_raw_C = [self._toggle_plus_C(e) for e in var_raw]
+        add_raw_C = [self._toggle_plus_C(e) for e in add_raw]
+        mul_raw_C = [self._toggle_plus_C(e) for e in mul_raw]
 
-        var_expands = self._uniquify(var_expands + var_expands_C)
-        add_expands = self._uniquify(add_expands + add_expands_C)
-        mul_expands = self._uniquify(mul_expands + mul_expands_C)
+        var_exprs = self._uniquify(var_raw + var_raw_C)
+        add_exprs = self._uniquify(add_raw + add_raw_C)
+        mul_exprs = self._uniquify(mul_raw + mul_raw_C)
 
-        add_biggers = []
+        add_bigger_raw: list = []
+        add_bigger_C: list = []
         if self.add_xtop:
-            add_biggers = self._add_extend_top_level(M.orig)
-            add_biggers_C = [self._toggle_plus_C(e) for e in add_biggers]
-            add_biggers = self._uniquify(add_biggers + add_biggers_C)
+            add_bigger_raw = self._add_extend_top_level(M.orig)
+            add_bigger_C = [self._toggle_plus_C(e) for e in add_bigger_raw]
+            add_bigger_exprs = self._uniquify(add_bigger_raw + add_bigger_C)
+        else:
+            add_bigger_exprs = []
 
-        shrunk = []
+        shrunk_raw: list = []
         if self.shrinker:
-            shrunk = self._shrinker(M.orig)
+            shrunk_raw = self._shrinker(M.orig)
+            shrunk_exprs = self._uniquify(shrunk_raw)
+        else:
+            shrunk_exprs = []
 
         def _make_models(exprs, reln):
             result: List[SearchModel] = []
@@ -350,13 +358,128 @@ class Grower:
                 result.append(m_expanded)
             return result
 
-        var_models: List[SearchModel] = _make_models(var_expands, "var_xpnd")
-        big_models: List[SearchModel] = _make_models(add_biggers, "add_bigr")
-        add_models: List[SearchModel] = _make_models(add_expands, "add_xpnd")
-        mul_models: List[SearchModel] = _make_models(mul_expands, "mul_xpnd")
-        shrunk_models: List[SearchModel] = _make_models(shrunk, "shrunk")
+        var_models: List[SearchModel] = _make_models(var_exprs, "var_xpnd")
+        big_models: List[SearchModel] = _make_models(add_bigger_exprs, "add_bigr")
+        add_models: List[SearchModel] = _make_models(add_exprs, "add_xpnd")
+        mul_models: List[SearchModel] = _make_models(mul_exprs, "mul_xpnd")
+        shrunk_models: List[SearchModel] = _make_models(shrunk_exprs, "shrunk")
 
         return var_models + big_models + add_models + mul_models + shrunk_models
+
+    def grow_with_stats(
+        self, M: SearchModel
+    ) -> Tuple[List[SearchModel], List[GrowOperatorStats], List[GrowOperatorTime]]:
+        """Expand a single model via all growth operators, returning per-operator stats and timings.
+
+        Parameters
+        ----------
+        M:
+            Model to expand.
+
+        Returns
+        -------
+        tuple[list[SearchModel], list[GrowOperatorStats], list[GrowOperatorTime]]
+            ``(children, operator_stats, operator_times)`` where operator_stats
+            contains counts and sizes, and operator_times contains durations.
+        """
+        var_raw: list = []
+        add_raw: list = []
+        mul_raw: list = []
+        add_bigger_raw: list = []
+        add_bigger_C: list = []
+        add_bigger_exprs: list = []
+        shrunk_raw: list = []
+        shrunk_exprs: list = []
+
+        t0 = time.time()
+        var_raw = self._var_sub(M.orig)
+        var_t = time.time() - t0
+        t0 = time.time()
+        add_raw = self._add_extend(M.orig)
+        add_t = time.time() - t0
+        t0 = time.time()
+        mul_raw = self._mul_extend(M.orig)
+        mul_t = time.time() - t0
+        t0 = time.time()
+        if self.add_xtop:
+            add_bigger_raw = self._add_extend_top_level(M.orig)
+            add_bigger_C = [self._toggle_plus_C(e) for e in add_bigger_raw]
+            add_bigger_exprs = self._uniquify(add_bigger_raw + add_bigger_C)
+        add_bigr_t = time.time() - t0
+        t0 = time.time()
+        if self.shrinker:
+            shrunk_raw = self._shrinker(M.orig)
+            shrunk_exprs = self._uniquify(shrunk_raw)
+        shrunk_t = time.time() - t0
+        t0 = time.time()
+
+        var_raw_C = [self._toggle_plus_C(e) for e in var_raw]
+        add_raw_C = [self._toggle_plus_C(e) for e in add_raw]
+        mul_raw_C = [self._toggle_plus_C(e) for e in mul_raw]
+        t1 = time.time() - t0
+
+        var_exprs = self._uniquify(var_raw + var_raw_C)
+        add_exprs = self._uniquify(add_raw + add_raw_C)
+        mul_exprs = self._uniquify(mul_raw + mul_raw_C)
+
+        def _make_models(exprs, reln):
+            result: List[SearchModel] = []
+            for e in exprs:
+                if e == C:
+                    continue
+                rewritten, cs = SearchModel.rewrite_coeff_only(e)
+                m_raw = SearchModel(rewritten, xs=self.xs, cs=cs, p_id=M.id, reln=reln)
+                expanded = sympy.expand(rewritten)
+                m_expanded = SearchModel(expanded, xs=self.xs, cs=cs, p_id=M.id, reln=reln)
+                m_expanded._expr = expanded
+                result.append(m_raw)
+                result.append(m_expanded)
+            return result
+
+        var_models = _make_models(var_exprs, "var_xpnd")
+        big_models = _make_models(add_bigger_exprs, "add_bigr")
+        add_models = _make_models(add_exprs, "add_xpnd")
+        mul_models = _make_models(mul_exprs, "mul_xpnd")
+        shrunk_models = _make_models(shrunk_exprs, "shrunk")
+
+        all_models = var_models + big_models + add_models + mul_models + shrunk_models
+
+        def _avg_size(models):
+            if not models:
+                return 0.0
+            return sum(m.size() for m in models) / len(models)
+
+        ops = [
+            GrowOperatorStats(
+                "var_xpnd", len(var_raw) + len(var_raw_C), len(var_exprs), len(var_models), _avg_size(var_models)
+            ),
+            GrowOperatorStats(
+                "add_bigr",
+                len(add_bigger_raw) + len(add_bigger_C),
+                len(add_bigger_exprs),
+                len(big_models),
+                _avg_size(big_models),
+            ),
+            GrowOperatorStats(
+                "add_xpnd", len(add_raw) + len(add_raw_C), len(add_exprs), len(add_models), _avg_size(add_models)
+            ),
+            GrowOperatorStats(
+                "mul_xpnd", len(mul_raw) + len(mul_raw_C), len(mul_exprs), len(mul_models), _avg_size(mul_models)
+            ),
+            GrowOperatorStats(
+                "shrunk", len(shrunk_raw), len(shrunk_exprs), len(shrunk_models), _avg_size(shrunk_models)
+            ),
+        ]
+
+        times = [
+            GrowOperatorTime("var_xpnd", var_t + t1),
+            GrowOperatorTime("add_bigr", add_bigr_t),
+            GrowOperatorTime("add_xpnd", add_t + t1),
+            GrowOperatorTime("mul_xpnd", mul_t + t1),
+            GrowOperatorTime("shrunk", shrunk_t),
+        ]
+
+        return all_models, ops, times
 
     # ------------------------------------------------------------------
     # Expansion operators

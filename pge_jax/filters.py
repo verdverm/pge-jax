@@ -11,7 +11,7 @@ from __future__ import annotations
 from sympy import Symbol, preorder_traversal  # type: ignore[import-untyped]
 from sympy.core.numbers import Integer, One, Zero  # type: ignore[import-untyped]
 
-from pge_jax.search_model import SearchModel
+from pge_jax.search_model import FilterBreakdown, SearchModel
 
 C = Symbol("C")
 
@@ -33,6 +33,53 @@ def filter_models(models: list[SearchModel], filters: list) -> list[SearchModel]
         Models that passed all filters.
     """
     return [modl for modl in models if not filter_model(modl, modl.orig, filters)]
+
+
+def filter_models_with_stats(
+    models: list[SearchModel], filters: list
+) -> tuple[list[SearchModel], list[FilterBreakdown]]:
+    """Return models that pass every filter, plus per-filter rejection counts.
+
+    Parameters
+    ----------
+    models:
+        Candidate models to test.
+    filters:
+        List of filter callables.  Each receives ``(model, expr)`` and
+        returns ``True`` to reject.
+
+    Returns
+    -------
+    tuple[list[SearchModel], list[FilterBreakdown]]
+        ``(passed_models, filter_breakdown)`` where filter_breakdown contains
+        the number of rejections per filter function.
+    """
+    filter_names: list[str] = []
+    for fi, f in enumerate(filters):
+        name = getattr(f, "__name__", None)
+        if name and name != "<lambda>":
+            filter_names.append(name)
+        else:
+            filter_names.append(f"filter_{fi}")
+    rejection_counts: dict[str, int] = {name: 0 for name in filter_names}
+
+    passed: list[SearchModel] = []
+    for modl in models:
+        rejected = False
+        for e in preorder_traversal(modl.orig):
+            for fi, f in enumerate(filters):
+                if f(modl, e):
+                    name = filter_names[fi]
+                    rejection_counts[name] += 1
+                    rejected = True
+                    break
+            if rejected:
+                break
+        if not rejected:
+            passed.append(modl)
+
+    breakdown = [FilterBreakdown(name, rejection_counts[name]) for name in filter_names]
+    return passed, breakdown
 
 
 def filter_model(modl: SearchModel, expr, filters: list) -> bool:

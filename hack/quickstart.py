@@ -14,14 +14,13 @@ Y = 3.0 * X[:, 0] + 1.5 * X[:, 1] ** 2 - 0.5 * np.sin(X[:, 0])
 pge = PGE(
     usable_vars=["x0", "x1"],
     usable_funcs=["sin", "cos", "exp", "log"],
-    max_iter=5,
-    pop_count=10,
-    max_size=32,
-    peek_fraction=0.16,
+    max_iter=3,
+    pop_count=5,
+    max_size=16,
 )
 pge.fit(X, Y)
 
-# Get results
+# Get results programmatically
 best = pge.get_best_model()
 print(best.pretty_expr())  # e.g. "3.0*x0 + 1.5*x1**2 - 0.5*sin(x0)"
 

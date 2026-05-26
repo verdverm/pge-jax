@@ -8,7 +8,7 @@ from pge_jax.metrics import aic, bic, explained_variance, mae, mse, r2, rmse
 from pge_jax.model import JAXModel
 from pge_jax.optimize import fit_least_squares, fit_levenberg_marquardt
 from pge_jax.search import PGE, ExpanderConfig
-from pge_jax.search_model import SearchModel
+from pge_jax.search_model import IterationStageTimes, SearchModel, StageTimings
 from pge_jax.selection import assignCrowdingDist, isDominated, selNSGA2, selSPEA2, sortLogNondominated
 
 __all__ = [
@@ -45,4 +45,6 @@ __all__ = [
     "map_names_to_funcs",
     "PGE",
     "ExpanderConfig",
+    "StageTimings",
+    "IterationStageTimes",
 ]

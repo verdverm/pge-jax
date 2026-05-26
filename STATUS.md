@@ -220,6 +220,136 @@ Grow phase optimization must be complete first. The bare C fix (Phase 3) and def
 
 ---
 
+## 3. Core Loop — Work-Filter Stage Rework (Goal 2)
+
+### Brief
+
+The current core loop is a flat pipeline of hard-coded method calls in `_loop()` and `_preloop()`. There is no stage abstraction, no composability, and no separation between work generation and filtering. This section defines the plan to restructure the loop as a series of composable work-filter stages.
+
+### Current State
+
+**Not implemented.** Both `_loop()` and `_preloop()` are flat sequences of method calls with interleaved grow/filter/memoize/algebra/eval stages. No stage abstraction exists.
+
+### Design
+
+Each stage is a callable that takes a list of `SearchModel` and returns a list of `SearchModel`:
+
+```python
+Stage = Callable[[List[SearchModel], PGE], List[SearchModel]]
+```
+
+Stages are grouped into two categories:
+
+**Work stages** — produce new models:
+- `GrowStage`: pops from NSGA-II heap, calls `grower.grow()` on each
+- `AlgebraStage`: applies `manip_model()` to each model
+- `FirstExprStage`: seeds initial population via `grower.first_exprs()`
+
+**Filter stages** — reject models:
+- `FilterStage`: applies `filter_models()` with a configurable filter list
+- `MemoizeStage`: deduplicates via `hmap`, assigns IDs
+- `EvalStage`: peek or full evaluation via `_eval_models()`
+- `SelectionStage`: NSGA-II pop from heap (`selNSGA2`)
+
+Each stage has a `name` attribute for timing:
+
+```python
+@dataclass
+class Stage:
+    name: str
+    func: Callable[[List[SearchModel], PGE], List[SearchModel]]
+```
+
+### Pipeline Structure
+
+The loop becomes a list of stages executed sequentially:
+
+```python
+# Per-iteration pipeline
+pipeline = [
+    Stage("grow", grow_stage),
+    Stage("filter", filter_stage(default_filters)),
+    Stage("algebra", algebra_stage),
+    Stage("filter", filter_stage(default_filters)),
+    Stage("memoize", memoize_stage),
+    Stage("peek_eval", peek_eval_stage),
+    Stage("selection", selection_stage(peek_count)),
+    Stage("full_eval", full_eval_stage),
+]
+```
+
+### Phases
+
+#### Phase 1: Stage abstraction
+
+**Files:** `pge_jax/pipeline.py` (new)
+
+- Define `Stage` dataclass with `name: str` and `__call__(models, pge) -> List[SearchModel]`
+- Add `PGE._run_stage(stage, models, timing_key)` for timing and error handling
+- No behavioral changes — just the abstraction
+
+#### Phase 2: Extract stage factories
+
+**Files:** `pge_jax/pipeline.py`
+
+- `make_grow_stage(expander_config)` — closure over expander
+- `make_filter_stage(filter_list)` — closure over filters
+- `make_memoize_stage()` — closure over self.hmap/self.models
+- `make_algebra_stage()` — closure over algebra_methods
+- `make_eval_stage(peek: bool)` — closure over peek flag
+- `make_selection_stage(pop_count, is_peek: bool)` — closure over heap + count
+
+#### Phase 3: Refactor `_loop()` to stage list
+
+**Files:** `pge_jax/search.py`
+
+- `_loop()` becomes a stage runner: build pipeline list, iterate with timing
+- Preserve existing timing (`_loop_phase_times`)
+- Preserve existing behavior exactly — no semantic changes
+- Handle empty populations at each stage (early return)
+
+#### Phase 4: Refactor `_preloop()` to stage list
+
+**Files:** `pge_jax/search.py`
+
+- `_preloop()` uses the same stage abstraction
+- Reuse stage factories from Phase 2
+- The preloop pipeline differs only in the grow stage (uses `first_exprs()`)
+
+#### Phase 5: Move `_uniquify()` after filtering (STATUS.md Phase 6)
+
+**Files:** `expand.py`, `pge_jax/pipeline.py`
+
+- Remove `_uniquify()` call from `grow()` — return raw expression lists
+- Add a `DedupStage` that calls `_uniquify()` on raw expressions before `SearchModel` creation
+- Or: keep `_uniquify()` in `grow()` but skip `SearchModel` creation until after filtering (Option B from STATUS.md)
+- **Recommendation:** Keep `_uniquify()` in `grow()` (Option B) — minimal filter changes needed
+
+#### Phase 6: Add `max_grow_children` (STATUS.md Phase 7)
+
+**Files:** `expand.py`, `pge_jax/pipeline.py`
+
+- Add `max_grow_children` config to `Grower.__init__`
+- Size-based pruning in `grow()` — skip operators producing children exceeding `max_size`
+- Add as a `PruneStage` in the pipeline after grow
+
+### Verification
+
+- All 116 tests pass after each phase
+- Timing output identical (same `_loop_phase_times` keys and values)
+- No behavioral changes — same models produced, same Pareto fronts
+
+### TODO
+
+- [ ] Phase 1: Stage abstraction (`pge_jax/pipeline.py`)
+- [ ] Phase 2: Stage factories
+- [ ] Phase 3: Refactor `_loop()` to stage list
+- [ ] Phase 4: Refactor `_preloop()` to stage list
+- [ ] Phase 5: Move `_uniquify()` after filtering
+- [ ] Phase 6: Add `max_grow_children`
+
+---
+
 ## Current Architecture
 
 1. `Grower.first_exprs()` — seed expressions from grammar
