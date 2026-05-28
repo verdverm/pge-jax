@@ -179,11 +179,14 @@ class PGE:
         self.fitness_func_params = fitness_func_params or DEFAULT_FITNESS_PARAMS
         self.fitness_calc = None  # set in fit() after seeing models
 
+        # Resolve defaults
+        _usable_funcs = usable_funcs if usable_funcs is not None else ["sin", "cos", "exp", "log"]
+
         # Multi-expanders
         self.multi_expander_params = multi_expander_params or [
             {
                 "pop_count": pop_count,
-                "usable_funcs": usable_funcs or ["sin", "cos", "exp", "log"],
+                "usable_funcs": _usable_funcs,
                 "grow_params": grow_params or {},
             }
         ]

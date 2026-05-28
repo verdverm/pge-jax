@@ -31,7 +31,7 @@ def benchmark_pge(X, Y, config, label):
         pop_count=config.get("pop_count", 20),
         max_size=config.get("max_size", 32),
         peek_count=config.get("peek_count", 40),
-        peek_npts=config.get("peek_npts", 32),
+        peek_fraction=config.get("peek_fraction", 0.0),
     )
 
     tracemalloc.start()
@@ -53,10 +53,10 @@ if __name__ == "__main__":
     X, Y = generate_data()
 
     # Small run for quick validation
-    small = {"max_iter": 3, "pop_count": 10, "max_size": 20, "peek_count": 20, "peek_npts": 16}
+    small = {"max_iter": 3, "pop_count": 10, "max_size": 20, "peek_count": 20, "peek_fraction": 0.05}
 
     # Full run
-    full = {"max_iter": 10, "pop_count": 30, "max_size": 48, "peek_count": 60, "peek_npts": 64}
+    full = {"max_iter": 10, "pop_count": 30, "max_size": 48, "peek_count": 60, "peek_fraction": 0.15}
 
     run = sys.argv[1] if len(sys.argv) > 1 else "small"
     config = small if run == "small" else full

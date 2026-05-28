@@ -81,7 +81,7 @@ PGE combines grammar-based expression generation with evolutionary multi-objecti
 
 4. **Algebraic manipulation** — Valid expressions are expanded, factored, and simplified to discover equivalent forms that may have better coefficient fits.
 
-5. **Progressive evaluation** — Candidates are first evaluated on a small data subset (`peek_npts`). Only the most promising survive via NSGA-II selection to full evaluation on all training data.
+5. **Progressive evaluation** — Candidates are first evaluated on a small data subset (`peek_fraction`). Only the most promising survive via NSGA-II selection to full evaluation on all training data.
 
 6. **Multi-objective optimization** — Each candidate is scored on multiple objectives (RMSE, complexity, AIC/BIC). NSGA-II maintains a Pareto front of non-dominated solutions across iterations.
 
@@ -132,7 +132,7 @@ All candidate expressions from Grower
             │
             ▼
     ┌───────────────┐
-    │  Peek Eval    │  ← Uses peek_npts (default 16) data points
+     │  Peek Eval    │  ← Uses peek_fraction of training data (off by default)
     │  (fast subset)│
     └───────┬───────┘
             │
@@ -195,7 +195,7 @@ pge = PGE(
     max_iter=100,               # search iterations
     pop_count=3,                # models expanded per expander per iteration
     peek_count=6,               # models selected from peek heap for full eval
-    peek_npts=16,               # data points for fast partial (peek) evaluation
+    peek_fraction=0.25,         # fraction of data for fast partial evaluation (0 = off)
     max_size=64,                # max expression tree size
     max_power=5,                # max power exponent
     algebra_methods=["expand", "factor"],
@@ -309,7 +309,7 @@ The default optimizer because it's well-suited for least-squares problems, uses 
 
 ### Progressive Evaluation
 
-The search uses `peek_npts` (default 16) data points for fast partial evaluation of candidate expressions, then fully evaluates only the most promising ones on all training data. This dramatically reduces the number of expensive full evaluations.
+The search uses `peek_fraction` (default 0.0, off) to use a fraction of training data for fast partial evaluation of candidate expressions, then fully evaluates only the most promising ones on all training data. This dramatically reduces the number of expensive full evaluations when enabled.
 
 ## Installation
 

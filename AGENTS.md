@@ -86,7 +86,7 @@ mypy pge_jax/
 3. `Memoizer` — skip already-seen expressions
 4. `manip_model()` — symbolic expand/factor/simplify
 5. `filter_models()` + `Memoizer` — dedup algebraic variants
-6. `PGE._eval_models()` — peek evaluation on `peek_npts` subset
+6. `PGE._eval_models()` — peek evaluation on `peek_fraction` subset
 7. `PGE._peek_pop()` — NSGA-II selection to keep promising candidates
 8. `PGE._eval_models()` — full evaluation on all training data
 9. `PGE._final_push()` — accumulate into final Pareto front
