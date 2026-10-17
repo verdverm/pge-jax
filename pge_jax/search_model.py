@@ -251,7 +251,6 @@ class IterationProgress:
     avg_filtered_size: float = 0.0
     avg_algebra_size: float = 0.0
     memoized: int = 0
-    memoized: int = 0
 
 
 class SearchModel:
@@ -260,9 +259,11 @@ class SearchModel:
     Parameters
     ----------
     expr:
-        A sympy expression.  Bare ``sympy.Symbol('C')`` leaves are
-        treated as optimisable coefficients; all other free symbols
-        are input variables.
+        A sympy expression.  Symbols whose name starts with ``C_`` or
+        ``C[`` are treated as optimisable coefficients; a bare
+        ``sympy.Symbol('C')`` is NOT a coefficient until rewritten by
+        :meth:`rewrite_coeff_only` / :meth:`rewrite_coeff`.  All other
+        free symbols are input variables.
     xs:
         Explicit list of input-variable symbols.  If ``None`` they
         are inferred from *expr*.

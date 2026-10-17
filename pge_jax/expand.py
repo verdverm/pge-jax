@@ -17,8 +17,6 @@ import sympy  # type: ignore[import-untyped]
 from pge_jax.filters import C
 from pge_jax.search_model import GrowOperatorStats, GrowOperatorTime, SearchModel
 
-C = sympy.Symbol("C")
-
 BASIC_BASE = [sympy.exp, sympy.cos, sympy.sin]
 BASIC_MISC = [sympy.Abs, sympy.sqrt, sympy.log, sympy.exp]
 BASIC_TRIG = [sympy.cos, sympy.sin, sympy.tan]

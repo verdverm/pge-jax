@@ -42,9 +42,11 @@ class JAXModel:
     Parameters
     ----------
     expr:
-        A sympy expression.  Bare ``sympy.Symbol('C')`` leaves are
-        treated as optimisable coefficients; all other free symbols
-        are treated as input variables.
+        A sympy expression.  Symbols whose name starts with ``C_`` or
+        ``C[`` are treated as optimisable coefficients; all other free
+        symbols (including a bare ``sympy.Symbol('C')``) are treated as
+        input variables.  Use :meth:`SearchModel.rewrite_coeff_only`
+        to convert bare ``C`` atoms into ``C_0, C_1, ...`` first.
     cs:
         Explicit list of coefficient symbols.  If *None* they are
         inferred from *expr*.

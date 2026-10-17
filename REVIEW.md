@@ -1,6 +1,8 @@
 # REVIEW — pge-jax
 
 Date of review: working tree at commit `d6a5cf7` ("Update README.md").
+Updated in place after immediate-hygiene fixes 1–3 (lint/mypy errors,
+ExpanderConfig support, bare-C docstrings) were applied.
 
 Scope: full verification of all markdown documentation against the code (treating the
 code as the source of truth), a module-by-module code review, a test-suite review,
@@ -254,10 +256,11 @@ Observations:
   lives in `SearchModel`, not here. A `SearchModel` that defers expansion but then
   builds a `JAXModel` re-expands. Not a bug — `sympy.expand` is idempotent-ish — but
   the expanded expression is computed twice on separate paths.
-- Docstring says bare `C` symbols are "treated as optimisable coefficients", but
-  `_extract_coeffs_and_vars()` only recognizes `C_`/`C[` prefixes — bare `C` lands in
-  `vars_`. The class docstring contradicts the helper's docstring and the code. This is
-  the same bare-C trap STATUS documents; the `JAXModel` docstring should be corrected.
+- Docstring previously said bare `C` symbols are "treated as optimisable
+  coefficients", but `_extract_coeffs_and_vars()` only recognizes `C_`/`C[`
+  prefixes — bare `C` lands in `vars_`. **Fixed:** the docstring now states the
+  `C_`/`C[` convention explicitly and points to `rewrite_coeff_only()` for
+  converting bare `C` atoms. The same fix was applied to `SearchModel` (§5.4).
 - Each `JAXModel` triggers a fresh `sympy.lambdify` + XLA compile. There is no compile
   cache keyed by expression structure. With Phase 5's deferral this only bites for
   selected models, but structurally similar children still each compile.
@@ -304,10 +307,11 @@ The lazy-expr refactor (Phase 1) is cleanly done: `_raw_expr` + cached `_expr`
 property with a setter, `orig` preserved.
 
 Observations:
-- **mypy error:** `memoized: int = 0` is declared twice in the instrumentation
-  dataclass (lines 253-254, `no-redef`). Trivial fix.
-- The class docstring repeats `JAXModel`'s incorrect claim that bare `C` is treated as
-  a coefficient (line ~262). Same fix needed.
+- **mypy error:** `memoized: int = 0` was declared twice in the instrumentation
+  dataclass (lines 253-254, `no-redef`). **Fixed.**
+- The class docstring previously repeated `JAXModel`'s incorrect claim that bare `C`
+  is treated as a coefficient. **Fixed** — it now warns that bare `C` is NOT a
+  coefficient until rewritten.
 - `SearchModel` is a large state machine: 13 boolean lifecycle flags (`inited`,
   `memoized`, `algebrad`, `peeked`, `peek_queued`, `peek_popped`, `evaluated`,
   `queued`, `popped`, `expanded`, `finalized`, `errored`, ...). These are only weakly
@@ -323,12 +327,12 @@ The largest module and the least modular. The flat pipeline in `_preloop()`/`_lo
 is exactly what Goal 3 targets.
 
 Observations:
-- **`ExpanderConfig` is dead code.** Defined at line 52, exported in `__init__.py`,
-  referenced in the `PGE` docstring (line 104) — and never actually usable, because
-  `_preloop()` treats `multi_expander_params` entries as dicts (`p.get(...)`).
-  Either wire `ExpanderConfig` into `_preloop()` (accept both, normalize with
-  `dataclasses.asdict` or `isinstance` checks) or delete the class and fix the
-  docstring. As it stands it actively misleads users (it misled the README).
+- **`ExpanderConfig` is now supported.** It was previously dead code: defined at
+  line 52, exported in `__init__.py`, referenced in the `PGE` docstring — but
+  unusable, because `_preloop()` treats `multi_expander_params` entries as dicts
+  (`p.get(...)`). **Fixed:** `PGE.__init__` normalizes `ExpanderConfig` instances to
+  dicts via `dataclasses.asdict` at entry, so both forms are accepted. Verified with
+  full `fit()` runs on both paths.
 - **`search.py:377`: `to_eval = self._peek_pop() + self._peek_pop()`** — a double pop
   with the comment "double pop first time". This works but is surprising; a named
   method (`_peek_pop_double()` or a `count` parameter) would document intent.
@@ -438,19 +442,18 @@ immediate hygiene pass, option 1 as the planned work.
 
 ## 7. Tooling
 
-**ruff:** 16 errors.
+**ruff:** clean for `pge_jax/`. Remaining errors are confined to the two skipped
+test files (`tests/test_memoization.py`, `tests/test_pipeline_stages.py`) — E402/I001
+import ordering (deliberate: skips are declared before imports) and F401 unused
+imports. The `pge_jax/expand.py` F811 (`C` redefinition) and `pge_jax/search.py`
+E501 (long line) noted in the original review are **fixed**.
 
-- `pge_jax/expand.py:20` — F811 redefinition of `C`
-- `pge_jax/search.py:1325` — E501 line too long (128 > 120)
-- `tests/test_memoization.py`, `tests/test_pipeline_stages.py` — E402/I001 import
-  ordering (deliberate: skips are declared before imports), F401 unused imports
-- 6 of 16 auto-fixable with `--fix`
+**mypy:** clean for `pge_jax/`. The duplicate `memoized` field in
+`search_model.py` is **fixed**. Remaining `annotation-unchecked` notes for untyped
+function bodies (memoize.py, expand.py) are informational.
 
-**mypy:** 1 error — `search_model.py:254` duplicate `memoized` field. Several
-`annotation-unchecked` notes for untyped function bodies (memoize.py, expand.py).
-
-Neither tool is clean. Since the project has pre-commit configured, wiring both into it
-(or CI) would prevent drift.
+Both tools are now clean on library code. Since the project has pre-commit configured,
+wiring both into it (or CI) would prevent drift.
 
 ---
 
@@ -460,20 +463,19 @@ Ordered by impact:
 
 1. **Lost pipeline-stage implementation; 90 orphaned skipped tests.** The skipped tests
    reference stashed code that no longer exists. Decide their fate (§6).
-2. **`ExpanderConfig` is dead and misleading.** Exported, documented in the `PGE`
-   docstring, unusable in practice (§5.5). Fix or delete.
+2. ~~**`ExpanderConfig` is dead and misleading.**~~ **Fixed** — normalized to dicts
+   at `PGE.__init__` entry via `dataclasses.asdict`; both forms accepted (§5.5).
 3. **LM loop is Python-interpreted.** Biggest known performance lever; convert to
    `lax.while_loop` (§5.2). Matters more once grow-phase work increases the number of
    surviving candidates per iteration.
-4. **Docstrings repeat the bare-C falsehood.** `JAXModel` and `SearchModel` docstrings
-   claim bare `C` is treated as a coefficient; the extractor only recognizes `C_`/`C[`
-   (§5.1, §5.4). This is the exact misconception that caused the Phase 3 bug.
+4. ~~**Docstrings repeat the bare-C falsehood.**~~ **Fixed** — `JAXModel` and
+   `SearchModel` docstrings now state the `C_`/`C[` convention correctly (§5.1, §5.4).
 5. **Grow operator duplication.** `_make_models()` is copy-pasted between `grow()` and
    `grow_with_stats()` (§5.6).
 6. **Two memoization sources of truth.** `Memoizer.hmap` and `PGE.hmap` (§5.7).
-7. **mypy duplicate field** (`search_model.py:253-254`).
-8. **ruff: F811 in expand.py, E501 in search.py**, import-order noise in the two
-   skipped test files.
+7. ~~**mypy duplicate field** (`search_model.py:253-254`).~~ **Fixed.**
+8. ~~**ruff: F811 in expand.py, E501 in search.py**~~ **Fixed.** Import-order noise in
+   the two skipped test files remains (deliberate skip-marker placement).
 9. **Print-based reporting** contradicts AGENTS.md's no-print convention (§5.5).
 10. **Metrics export gap** (`chisqr`, `redchi`, `rmae`) — docs now match code, but the
     code is arguably the thing that's wrong (§5.8).
@@ -486,12 +488,11 @@ Ordered by impact:
 
 **Immediate hygiene (small, independent):**
 
-1. Fix the mypy duplicate `memoized` field and the two ruff errors in library code
-   (`expand.py` F811, `search.py` E501). Five minutes each.
-2. Resolve `ExpanderConfig`: either support it in `_preloop()` (normalize dataclass →
-   dict at entry) or remove it and correct the `PGE` docstring. Supporting it is the
-   better API — typed configs beat stringly-typed dicts.
-3. Fix the bare-C claims in the `JAXModel` and `SearchModel` docstrings.
+1. ~~Fix the mypy duplicate `memoized` field and the two ruff errors in library code
+   (`expand.py` F811, `search.py` E501).~~ **Done.**
+2. ~~Resolve `ExpanderConfig`~~ **Done** — supported via `asdict` normalization at
+   `PGE.__init__` entry; both `ExpanderConfig` and dict forms accepted.
+3. ~~Fix the bare-C claims in the `JAXModel` and `SearchModel` docstrings.~~ **Done.**
 4. Decide on the metric exports: add `chisqr`, `redchi`, `rmae` to `__init__.py`
    (consistent with `EvalResult` carrying them) or leave as-is now that the README is
    accurate.
@@ -539,7 +540,9 @@ Ordered by impact:
 
 The documentation now matches the code. The code is correct (all running tests pass),
 well-structured at the module level, and mid-way through a well-specified optimization
-plan. The project's real debt is concentrated in three places: the orphaned pipeline
-tests and their lost implementation, the dead `ExpanderConfig` API, and the
-Python-interpreted LM loop. Addressing the first two is hygiene; addressing the third
-is where the performance is.
+plan. Since the original review, the immediate-hygiene items have been resolved:
+library code is clean under both ruff and mypy, `ExpanderConfig` is a working API, and
+the misleading bare-C docstrings are corrected. The project's remaining debt is
+concentrated in two places: the orphaned pipeline tests and their lost implementation,
+and the Python-interpreted LM loop. Addressing the first is hygiene; addressing the
+second is where the performance is.

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import random
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import jax.numpy as jnp
@@ -101,7 +101,9 @@ class PGE:
     fitness_func_params:
         Multi-objective fitness parameters.
     multi_expander_params:
-        List of :class:`ExpanderConfig` for multi-expander runs.
+        List of :class:`ExpanderConfig` instances (or equivalent dicts with
+        ``pop_count``, ``usable_funcs``, ``grow_params`` keys) for
+        multi-expander runs.
     grow_params:
         Keyword arguments for the default expander's :class:`Grower`.
     random_seed:
@@ -129,7 +131,7 @@ class PGE:
         algebra_methods: List[str] | None = None,
         err_method: str = "mse",
         fitness_func_params: List[str] | None = None,
-        multi_expander_params: List[Dict] | None = None,
+        multi_expander_params: List[Dict] | List[ExpanderConfig] | None = None,
         grow_params: Dict[str, Any] | None = None,
         random_seed: int = 23,
     ):
@@ -182,14 +184,19 @@ class PGE:
         # Resolve defaults
         _usable_funcs = usable_funcs if usable_funcs is not None else ["sin", "cos", "exp", "log"]
 
-        # Multi-expanders
-        self.multi_expander_params = multi_expander_params or [
-            {
-                "pop_count": pop_count,
-                "usable_funcs": _usable_funcs,
-                "grow_params": grow_params or {},
-            }
-        ]
+        # Multi-expanders (accept ExpanderConfig instances or equivalent dicts)
+        if multi_expander_params is None:
+            self.multi_expander_params: List[Dict] = [
+                {
+                    "pop_count": pop_count,
+                    "usable_funcs": _usable_funcs,
+                    "grow_params": grow_params or {},
+                }
+            ]
+        else:
+            self.multi_expander_params = [
+                asdict(p) if isinstance(p, ExpanderConfig) else p for p in multi_expander_params
+            ]
         self.multi_expanders: List[Dict] = []
 
         # Data
@@ -1321,9 +1328,9 @@ class PGE:
                     meth_t = method_info["time"]
                     pct = meth_t / alg_total * 100 if alg_total > 0 else 0
                     print(f"        {method_info['method']:12s}  {meth_t:.4f}s  ({pct:5.1f}%)")
-            print(
-                f"      memo          {self._loop_stage_times.memo_time[it]:.4f}s ({self._loop_stage_times.memo_dups[it]} dups)"
-            )
+            memo_t = self._loop_stage_times.memo_time[it]
+            memo_dups = self._loop_stage_times.memo_dups[it]
+            print(f"      memo          {memo_t:.4f}s ({memo_dups} dups)")
             print(f"      peek_eval     {peek_t:.4f}s")
             print(f"      full_eval     {full_t:.4f}s")
 
