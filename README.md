@@ -201,9 +201,9 @@ pge = PGE(
     algebra_methods=["expand", "factor"],
     err_method="mse",           # error metric for score
     random_seed=23,
-    expanders=[                 # optional: multiple expanders with different configs
-        ExpanderConfig(pop_count=3, max_size=32),
-        ExpanderConfig(pop_count=2, max_size=64),
+    multi_expander_params=[     # optional: multiple expanders with different configs
+        {"pop_count": 3, "grow_params": {"grow_level": "low"}},
+        {"pop_count": 2, "grow_params": {"grow_level": "high"}},
     ],
 )
 
@@ -280,8 +280,8 @@ from pge_jax import (
     # Expansion
     Grower, map_names_to_funcs,
 
-    # Metrics
-    rmse, mae, mse, r2, explained_variance, aic, bic, chisqr, redchi, rmae,
+    # Metrics (chisqr, redchi, rmae also available via pge_jax.metrics)
+    rmse, mae, mse, r2, explained_variance, aic, bic,
 
     # Optimizers
     fit_levenberg_marquardt, fit_least_squares,

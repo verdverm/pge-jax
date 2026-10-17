@@ -2,7 +2,7 @@
 
 ## Overview
 
-Prioritized Grammar Enumeration (PGE) for symbolic regression, implemented in JAX. The core search loop is complete with 116 passing tests (92 original + 24 new phase validation tests).
+Prioritized Grammar Enumeration (PGE) for symbolic regression, implemented in JAX. The core search loop is complete with 323 passing tests (413 collected; 90 skipped pending the pipeline-stage rework — see Goal 3).
 
 **Priority order:** (1) Grow phase optimization → (2) Coefficient expansion (LAST).
 
@@ -53,7 +53,7 @@ The grow phase dominates search time. Three architectural issues:
 
 ### Current State
 
-Nothing implemented. The following code paths are confirmed slow/broken:
+Phases 1–5 are implemented and verified (see phase sections below). Phases 6–7 are pending. The following code paths were the original pre-optimization issues (line numbers refer to the pre-refactor code):
 
 - `search_model.py:133` — `self.expr = sympy.expand(expr)` runs eagerly in every `SearchModel.__init__`
 - `expand.py:337-341` — `grow()` creates `SearchModel(e, p_id=M.id, reln="...")` with no `cs` arg, so `self.cs = []`
@@ -73,7 +73,7 @@ Nothing implemented. The following code paths are confirmed slow/broken:
 - `SearchModel.__hash__` uses `self.id`, not expression — no change needed
 - Added `expr` setter for direct cache assignment (used by Phase 4)
 
-**Verification:** ✅ All 116 tests pass. First access defers to lazy computation. No behavioral change.
+**Verification:** ✅ All tests pass. First access defers to lazy computation. No behavioral change.
 
 **Tests added:** `test_phase1_lazy_expr_not_computed_on_init`, `test_phase1_lazy_expr_computed_on_access`, `test_phase1_lazy_expr_cached`, `test_phase1_lazy_expr_setter`, `test_phase1_orig_unchanged`
 
@@ -159,7 +159,7 @@ Nothing implemented. The following code paths are confirmed slow/broken:
 
 ### Verification
 
-- All 116 tests pass after each phase (92 original + 24 new phase validation tests)
+- All tests pass after each phase (currently 323 passing, 90 skipped pending pipeline-stage rework)
 - Add benchmark comparing grow time per iteration before/after (Phase 7)
 - Track: children per parent, filter rejection rate, time per child, JAX compilations per iteration
 
@@ -229,6 +229,8 @@ The current core loop is a flat pipeline of hard-coded method calls in `_loop()`
 ### Current State
 
 **Not implemented.** Both `_loop()` and `_preloop()` are flat sequences of method calls with interleaved grow/filter/memoize/algebra/eval stages. No stage abstraction exists.
+
+**History:** An initial attempt (May 2026 commits `9e58b90`, `6cc1841`) was partially reverted. 90 tests remain skipped with reason "paired with stashed search.py code" (30 in `tests/test_pipeline_stages.py`, 60 in `tests/test_memoization.py`); the referenced git stash no longer exists, so the skipped tests are the only record of that design.
 
 ### Design
 
