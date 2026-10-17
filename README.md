@@ -132,7 +132,7 @@ All candidate expressions from Grower
             │
             ▼
     ┌───────────────┐
-     │  Peek Eval    │  ← Uses peek_fraction of training data (off by default)
+    │  Peek Eval    │  ← Uses peek_fraction of training data (off by default)
     │  (fast subset)│
     └───────┬───────┘
             │
