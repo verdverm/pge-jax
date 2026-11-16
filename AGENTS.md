@@ -1,105 +1,101 @@
-# pge-jax — Agent Instructions
+# pge-jax - Agent Instructions
+
+## Scope
+
+`pge_jax/` and `tests/` are the implementation. `ffx/`, `go-pge/`, `pypge/`, and `pysr/` are reference codebases. `.design/` contains active design notes, `STATUS.md` tracks planned work, `REVIEW.md` tracks current findings, and `.sessions/` contains historical session records.
+
+Do not rewrite third-party documentation or historical session records as if they described the current package.
 
 ## Project Structure
 
-```
+```text
 pge-jax/
-├── pge_jax/              # Package source
-│   ├── __init__.py       # Public API exports
-│   ├── model.py          # JAXModel: sympy → JAX evaluation wrapper
-│   ├── optimize.py       # LM and BFGS optimizers
-│   ├── metrics.py        # JAX-native regression metrics
-│   ├── evaluate.py       # High-level fit/predict/evaluate pipeline
-│   ├── search_model.py   # SearchModel: state, size, fitness
-│   ├── filters.py        # Expression validity filters
-│   ├── algebra.py        # Symbolic expand/factor/simplify
-│   ├── memoize.py        # Hash-based expression deduplication
+├── pge_jax/
+│   ├── __init__.py       # Curated public exports
+│   ├── model.py          # JAXModel expression evaluation and Jacobians
+│   ├── optimize.py       # Levenberg-Marquardt and BFGS fitting
+│   ├── metrics.py        # Regression metrics
+│   ├── evaluate.py       # fit_model, predict, evaluate, result types
+│   ├── search_model.py   # SearchModel and instrumentation dataclasses
+│   ├── filters.py        # Expression filters and rejection counts
+│   ├── algebra.py        # Symbolic expand, factor, simplify
+│   ├── memoize.py        # Standalone expression memoizer
 │   ├── fitness_funcs.py  # Multi-objective fitness construction
-│   ├── selection.py      # NSGA-II, SPEA-II, log-ND sort
-│   ├── expand.py         # Grower: grammar-based expression enumeration
-│   └── search.py         # PGE: main search loop orchestration
-├── tests/                # pytest test suite
-├── pyproject.toml        # Build config, deps, tool settings
-├── README.md             # User-facing documentation
-└── AGENTS.md             # This file
+│   ├── selection.py      # NSGA-II, SPEA-II, log-nondominated sort
+│   ├── expand.py         # Grammar-based grow operators
+│   └── search.py         # PGE orchestration and console reporting
+├── tests/                # Pytest suite
+├── .design/              # Design and technical notes
+├── pyproject.toml        # Package and tool configuration
+├── README.md             # User documentation
+├── STATUS.md             # Current work queue
+└── REVIEW.md             # Active technical review
 ```
 
-## Running the Code
+There is no `pge_jax/pipeline.py`; the pipeline abstraction remains planned.
+
+## Commands
 
 ```bash
-# Enter the venv (created during setup)
 source .venv/bin/activate
 
-# Run all tests
 python -m pytest tests/ -v
-
-# Run a single test file
 python -m pytest tests/test_search.py -v
+python -m pytest tests/test_search.py::TestSearchModel -v
 
-# Run a single test
-python -m pytest tests/test_search.py::TestIntegration::test_pge_single_var -v
-
-# Lint
 ruff check pge_jax/ tests/
-
-# Format
 ruff format pge_jax/ tests/
-
-# Type check
 mypy pge_jax/
 ```
 
-## Coding Conventions
+Run library and test linting separately when diagnosing failures. The skipped test modules contain existing ruff violations.
 
-- **Python 3.11+** — use modern syntax: `X | Y` unions, `match`/`case`, `typing.Self`
-- **120-char line limit** — configured in `pyproject.toml`
-- **Docstrings** — Google style (parameters, returns, raises sections)
-- **Imports** — standard library first, then third-party, then local (`pge_jax.*`), alphabetized within groups
-- **No bare `import jax`** — always `import jax.numpy as jnp` for array ops
-- **Type hints** — preferred on all public functions and class attributes
-- **No print statements** in library code — use logging or return values
+## Conventions
 
-## Core Architecture
+- Target Python 3.11+ and use modern type syntax such as `X | Y`.
+- Keep lines within 120 characters.
+- Use Google-style docstrings for public interfaces.
+- Order standard-library, third-party, and `pge_jax` imports alphabetically within groups.
+- Use `jax.numpy as jnp` for array operations. `import jax` is appropriate for configuration and transformations such as `jax.jacfwd`.
+- Add type hints to public functions and new class attributes.
+- Keep existing sections and IDs when updating documentation so session and design references remain valid.
+- Preserve terminal output behavior unless a task explicitly changes reporting. `search.py` deliberately uses console reporting; new reusable services should return values or use logging.
+- Do not use file and line references in long-lived prose unless necessary; they become stale quickly.
 
-### Two Abstraction Layers
+## Architecture
 
-**Layer 1: Evaluation** (`JAXModel` + `optimize.py` + `metrics.py`)
-- Wraps a sympy expression, provides JAX-compatible predict/jacobian
-- Fits coefficients via Levenberg-Marquardt (JAX-native)
-- Computes regression metrics (RMSE, R², AIC, BIC, etc.)
+### Evaluation
 
-**Layer 2: Search** (`SearchModel` + `PGE` + selection + expansion)
-- `SearchModel`: wraps expression with lifecycle state flags, size metrics, fitness values
-- `PGE`: orchestrates the full search loop (generate → filter → memoize → algebra → evaluate → select → expand)
-- `Grower`: grammar-based expression enumeration with 5 operators (var_sub, add_extend, mul_extend, add_xtop, shrink)
+1. `JAXModel` expands a sympy expression and identifies coefficient and variable symbols.
+2. `sympy.lambdify` builds the prediction function, with a NumPy fallback when JAX conversion fails.
+3. `fit_model()` initializes coefficients to zero and fits with Levenberg-Marquardt or BFGS.
+4. `evaluate()` computes regression metrics and returns `EvalResult`.
 
-### Evaluation Pipeline
+`JAXModel` is the reusable evaluation wrapper. `SearchModel` is the search-state wrapper.
 
-1. `JAXModel.__init__()` wraps sympy Expr, compiles `jax_fun` + `jac_fun`
-2. `fit_levenberg_marquardt()` optimizes coefficients → `FitResult`
-3. `evaluate()` computes all regression metrics → `EvalResult`
+### Search
 
-### Search Pipeline
+`PGE._preloop()` generates initial expressions, filters and memoizes them, creates algebraic variants, optionally performs peek selection, and fully evaluates candidates.
 
-1. `Grower.first_exprs()` — seed expressions from grammar
-2. `filter_models()` — reject invalid expressions
-3. `Memoizer` — skip already-seen expressions
-4. `manip_model()` — symbolic expand/factor/simplify
-5. `filter_models()` + `Memoizer` — dedup algebraic variants
-6. `PGE._eval_models()` — peek evaluation on `peek_fraction` subset
-7. `PGE._peek_pop()` — NSGA-II selection to keep promising candidates
-8. `PGE._eval_models()` — full evaluation on all training data
-9. `PGE._final_push()` — accumulate into final Pareto front
+`PGE._loop()` selects parents for each expander, grows raw and expanded children, filters them, memoizes candidates, creates and processes algebraic variants, optionally performs peek selection, and fully evaluates selected models. Exact ordering is configuration-dependent; read `_loop()` before changing it.
 
-### Key Types
+The main grow operators are `var_sub`, `add_extend`, `mul_extend`, `add_xtop`, and `shrink`. `Grower.grow_with_stats()` is the instrumented path used by the search loop; keep it semantically aligned with `Grower.grow()`.
+
+`PGE._memoize_models()` owns the active search index, model IDs, and `PGE.models`. The standalone `Memoizer` is a separate public utility. Both hash `SearchModel.orig` rather than canonicalizing algebraic equivalents.
+
+### Progressive evaluation
+
+For `0 < peek_fraction < 1`, `_set_data()` selects `max(1, int(peek_fraction * eval_npts))` random training rows. Peek fits coefficients on this subset and computes metrics over all training rows. Selected models then undergo normal fitting and evaluation. Data setup uses full arrays outside that interval, but the loops currently bypass peek only for exactly zero. Treat other nonzero values as an open defect, not supported configuration.
+
+## Key Types
 
 ```python
 @dataclass
 class FitResult:
     success: bool
-    coefficients: jnp.ndarray   # optimized coefficients
-    predictions: jnp.ndarray    # model predictions at optimized coeffs
-    cost: float                 # sum of squared residuals
+    coefficients: jnp.ndarray
+    predictions: jnp.ndarray
+    cost: float
     n_residuals: int
     n_params: int
     message: str = ""
@@ -108,7 +104,7 @@ class FitResult:
 @dataclass
 class EvalResult:
     fit: FitResult
-    score: float        # RMSE
+    score: float
     r2: float
     evar: float
     aic: float
@@ -120,84 +116,80 @@ class EvalResult:
     predictions: jnp.ndarray
 ```
 
-## Gotchas
+`nfev` currently counts optimizer iterations rather than every residual or Jacobian evaluation.
 
-### JAX float64
+## Implementation Gotchas
 
-JAX defaults to float32 on most platforms. To use float64 you need:
+### JAX precision
+
+JAX commonly defaults to float32. Requesting float64 without enabling x64 produces warnings and truncates values.
 
 ```python
+import jax
+
 jax.config.update("jax_enable_x64", True)
 ```
 
-Or set the env var: `JAX_ENABLE_X64=1`. The code requests float64 in `jnp.asarray(..., dtype=jnp.float64)` which triggers warnings when x64 is disabled. Tests pass with float32, but precision-sensitive work (e.g., symbolic regression convergence) may need x64.
+Alternatively, set `JAX_ENABLE_X64=1`. Tests use approximately `5e-3` absolute or relative tolerances for float32 compatibility. Do not tighten these tolerances without enabling x64 and reviewing platform behavior.
 
-### sympy.lambdify + JAX
+### Expression conversion
 
-- `sympy.lambdify` with `modules="jax"` works for most expressions but falls back to numpy on failure.
-- Each coefficient symbol becomes a separate argument. The wrapper in `JAXModel.jax_fun` unpacks the coefficient array to match.
-- If the expression has no variables (constant), `jax_fun` receives no input arrays — handle this case.
+- Use `import jax.numpy as jnp` for arrays.
+- `sympy.lambdify(..., modules="jax")` covers common expressions but can fall back to NumPy.
+- Coefficients are separate arguments in the lambdified function; `JAXModel.jax_fun` unpacks its coefficient array.
+- Constant expressions need special handling because they have no coefficient or variable arguments.
+- `SearchModel.expr` is lazy, but `JAXModel` expands its input during construction.
+- Instrumentation that calls `size()` or `pretty_expr()` can force expansion and size calculations.
 
-### LM Optimizer Convergence
+### Coefficient symbols
 
-The LM implementation has multiple convergence criteria:
-1. Cost below tolerance (`cost < tol`)
-2. Relative cost change below tolerance
-3. Coefficient change below tolerance
-4. Damping blowup (`mu > 1e12`) — failure
+Inference recognizes symbols beginning with `C_` or `C[`. Bare `C` is an input variable unless rewritten first.
 
-The default `tol=1e-4` works for most cases. The float32 precision means you won't get better than ~1e-6 accuracy regardless.
+`SearchModel.rewrite_coeff_only(expr)` assigns `C_0`, `C_1`, and so on during recursive traversal. `rewrite_coeff()` also updates model fields and immediately constructs the JAX wrapper. Grown children use the pure rewrite and defer JAX construction; initial expressions and algebraic variants use the combined method.
 
-### Coefficient Symbol Convention
+### Optimizer behavior
 
-Coefficients are identified by name prefix: `C_` or `C[`. The `SearchModel.rewrite_coeff()` method converts bare `sympy.Symbol('C')` leaves into `C_0`, `C_1`, etc. If you create expressions with bare `C` symbols, they won't be extracted as coefficients unless `rewrite_coeff()` is called.
+Levenberg-Marquardt checks initial cost, relative cost change, coefficient change, and damping blowup. Its Python loop calls JAX operations each iteration. Zero initialization can be unsuitable for some nonlinear forms. Fit failures remove candidates from `_eval_models()` results and set `errored=True`.
 
-### Test Precision
+### Selection compatibility
 
-Tests use `atol=5e-3` or `rel=5e-3` tolerances because float32 limits precision. Don't tighten these without first ensuring x64 is enabled.
+- `selNSGA2` and `assignCrowdingDist` read `individual.values`.
+- `sortLogNondominated` reads `individual.wvalues`.
+- `SearchModel.values` returns `fitness_values`; `wvalues` is a stored tuple.
+- Empty selections return empty lists, and callers must handle exhausted populations.
 
-### Selection API Compatibility
+## Adding Code
 
-The `selection.py` functions expect specific attributes on model objects:
-- `selNSGA2` / `assignCrowdingDist` — expects `individual.values` (tuple of raw fitness)
-- `sortLogNondominated` — expects `individual.wvalues` (tuple of weighted fitness)
-- `SearchModel` provides both: `values` property returns `fitness_values`, `wvalues` is a direct attribute
+### Metric
 
-### Empty Population Edge Cases
+1. Implement it in `pge_jax/metrics.py`.
+2. Export it in `pge_jax/__init__.py` if it is public at package level.
+3. Add it to `EvalResult` and `evaluate()` if it belongs in complete evaluation.
+4. Add tests in `tests/test_metrics.py` and `tests/test_evaluate.py` as appropriate.
 
-`selNSGA2` and `sortLogNondominated` return early (empty list) when given an empty individuals list. The PGE search loop may pass empty lists when the population is exhausted — callers should handle this.
+### Optimizer
 
-## Adding New Code
+1. Implement it in `pge_jax/optimize.py` and return `FitResult`.
+2. Export it in `pge_jax/__init__.py`.
+3. Add a supported method in `fit_model()`.
+4. Add convergence and failure-path tests in `tests/test_optimize.py` and `tests/test_evaluate.py`.
 
-### New Metric
+### Model feature
 
-1. Add function to `pge_jax/metrics.py` with Google-style docstring
-2. Add import and export in `pge_jax/__init__.py`
-3. Add to `EvalResult` in `pge_jax/evaluate.py` if it should be part of the full evaluation
-4. Add tests in `tests/test_metrics.py`
+1. Update the appropriate model wrapper, not both by default.
+2. Update JAX construction if evaluation is affected.
+3. Test symbolic state, numerical results, and failure behavior separately.
 
-### New Optimizer
+### Search feature
 
-1. Add function to `pge_jax/optimize.py` — return `FitResult`
-2. Add import in `pge_jax/__init__.py`
-3. Wire into `fit_model()` in `pge_jax/evaluate.py` if it should be a first-class option
-4. Add tests in `tests/test_optimize.py`
+1. Keep `grow()` and `grow_with_stats()` aligned.
+2. Update filtering, memoization, instrumentation, and reporting only where required.
+3. Export first-class public types in `pge_jax/__init__.py`.
+4. Add focused unit tests and full-search integration coverage.
+5. Update `STATUS.md` or `.design/` when an active plan changes.
 
-### New Model Feature
+### Filter
 
-1. Modify `JAXModel` in `pge_jax/model.py`
-2. Update `_build_jax_functions()` if the change affects evaluation
-3. Add tests in `tests/test_model.py`
-
-### New Search Module
-
-1. Add to `pge_jax/` with Google-style docstring
-2. Add exports in `pge_jax/__init__.py`
-3. Add tests in `tests/test_search.py`
-4. Wire into `PGE` class in `pge_jax/search.py` if it should be a first-class option
-
-### New Filter
-
-1. Add function to `pge_jax/filters.py` — takes `(modl: SearchModel, expr)` returns `True` if rejected
-2. Add to `default_filters` list
-3. Add tests in `tests/test_search.py::TestFilters`
+1. Add a callable `(modl: SearchModel, expr) -> bool`, where `True` means reject, in `pge_jax/filters.py`.
+2. Add it to `default_filters` or `PGE._get_default_filters()` when it should be active by default.
+3. Test accepted and rejected expressions plus filter statistics.
